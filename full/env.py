@@ -3,6 +3,11 @@ from termcolor import colored
 
 
 class City:
+    # Set reward/punishment values
+    NORMAL_REW = 1
+    MEDIUM_REW = 5
+    SEVERE_REW = 10
+
     def __init__(self, spawn_point=(0, 0)):
         """
         City with 6 streets and 4 avenues, where streets cut horizontally and are one-way, while avenues cut vertically and are two-way
@@ -95,9 +100,11 @@ class City:
         if not self.graph.has_node((future_row, future_col)):
             # player attempts to exit road, e.g. go off grid, go into building
             # severe punishment, terminate episode
-            rew -= 10
+            rew -= self.SEVERE_REW
             termination = True
-        elif (self.p_row, self.p_col) == (future_row, future_col):
+            return rew, termination  # return early for illegal movements
+
+        if (self.p_row, self.p_col) == (future_row, future_col):
             # player no-ops (stops)
             if (
                 self.graph.has_edge(
@@ -106,7 +113,8 @@ class City:
                 and self.grid[self.p_row - 1][self.p_col] == "A"
             ):
                 # in front of an active red light (avenue north-bound)
-                rew += 1
+                # normal reward, continue episode
+                rew += self.NORMAL_REW
             elif (
                 self.graph.has_edge(
                     (self.p_row, self.p_col), (self.p_row + 1, self.p_col)
@@ -114,7 +122,8 @@ class City:
                 and self.grid[self.p_row + 1][self.p_col] == "A"
             ):
                 # in front of an active red light (avenue south-bound)
-                rew += 1
+                # normal reward, continue episode
+                rew += self.NORMAL_REW
             elif (
                 self.graph.has_edge(
                     (self.p_row, self.p_col), (self.p_row, self.p_col + 1)
@@ -122,7 +131,8 @@ class City:
                 and self.grid[self.p_row][self.p_col + 1] == "S"
             ):
                 # in front of an active red light (street east-bound)
-                rew += 1
+                # normal reward, continue episode
+                rew += self.NORMAL_REW
             elif (
                 self.graph.has_edge(
                     (self.p_row, self.p_col), (self.p_row, self.p_col - 1)
@@ -130,17 +140,36 @@ class City:
                 and self.grid[self.p_row][self.p_col - 1] == "S"
             ):
                 # in front of an active red light (street west-bound)
-                rew += 1
-        
-        elif self.graph.has_edge((self.p_row, self.p_col), (future_row, future_col)):
+                # normal reward, continue episode
+                rew += self.NORMAL_REW
+            return rew, termination  # return early for no-op
+
+        # Parallel IF blocks to handle multiple traffic rules being broken simultaneously when player is moving
+        # Example: driving in the opposite lane while running an active red light
+        # Above early returns allow these IF blocks to be written in parallel without concern
+
+        if self.grid[future_row][future_col] == "A" and (
+            action == "W" or action == "S"
+        ):
+            # player runs traffic light (avenue)
+            # medium punishment (law broken), continue episode
+            rew -= self.MEDIUM_REW
+        elif self.grid[future_row][future_col] == "S" and (
+            action == "A" or action == "D"
+        ):
+            # player runs traffic light (street)
+            # medium punishment (law broken), continue episode
+            rew -= self.MEDIUM_REW
+
+        if self.graph.has_edge((self.p_row, self.p_col), (future_row, future_col)):
             # player follows traffic flow (not driving in the opposite lane)
             # normal reward, continue episode
-            rew += 1
+            rew += self.NORMAL_REW
             self._move_player(future_row, future_col)
         else:
             # player does not follow traffic flow (driving in the opposite lane, U-turning)
-            # normal punishment, continue episode
-            rew -= 1
+            # medium punishment (law broken), continue episode
+            rew -= self.MEDIUM_REW
             self._move_player(future_row, future_col)
 
         return rew, termination
@@ -174,8 +203,10 @@ if __name__ == "__main__":
 
     while not termination:
         city.env_step()  # placing env_step here necessitates init-ing time at -1
+
         print(city)
         action = input("::")
         rew, termination = city.step(action)
+
         print(f"Reward: {rew}")
         print("\n\n")
