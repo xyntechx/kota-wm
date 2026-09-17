@@ -36,8 +36,13 @@ class City:
         # Place traffic lights at nodes where in-deg == 2
         # Traffic lights start off blocking/stopping/redding avenues, switch every 2 ticks
         self.lights = [node for node, in_deg in self.graph.in_degree() if in_deg == 2]
+        self.stop_road = "S"  # either A (avenue) or S (street)
         for node in self.lights:
-            self.grid[node[0]][node[1]] = "A"
+            self.grid[node[0]][node[1]] = self.stop_road
+
+        # Init time
+        # Start off at -1 because we call env_step in the game loop first before showing the city
+        self.time = -1
 
         assert (
             self.grid[spawn_point[0]][spawn_point[1]] == 1
@@ -48,12 +53,30 @@ class City:
         self.grid[self.p_row][self.p_col] = "P"
         self.prev_cell = 1
 
+    def env_step(self):
+        """
+        Handles natural environment changes not caused by player actions.
+        """
+        # Move time forward by 1 tick
+        self.time += 1
+
+        # Change traffic light every 2 ticks
+        if self.time % 2 == 0:
+            self.stop_road = "A" if self.stop_road == "S" else "S"
+            for node in self.lights:
+                if self.grid[node[0]][node[1]] == "P":
+                    # player is at that node, don't replace it on the grid
+                    continue
+                self.grid[node[0]][node[1]] = self.stop_road
+
     def step(self, action):
         """
+        Handles consequences of player actions.
+
         Args:
         - action: str -- "W" (move North), "A" (move West), "S" (move South), "D" (move East)
         """
-        # TODO: reward (incl task fulfillment), traffic light switch
+        # TODO: reward (incl task fulfillment)
 
         future_row, future_col = self.p_row, self.p_col
         match action:
@@ -74,13 +97,48 @@ class City:
             # severe punishment, terminate episode
             rew -= 10
             termination = True
+        elif (self.p_row, self.p_col) == (future_row, future_col):
+            # player no-ops (stops)
+            if (
+                self.graph.has_edge(
+                    (self.p_row, self.p_col), (self.p_row - 1, self.p_col)
+                )
+                and self.grid[self.p_row - 1][self.p_col] == "A"
+            ):
+                # in front of an active red light (avenue north-bound)
+                rew += 1
+            elif (
+                self.graph.has_edge(
+                    (self.p_row, self.p_col), (self.p_row + 1, self.p_col)
+                )
+                and self.grid[self.p_row + 1][self.p_col] == "A"
+            ):
+                # in front of an active red light (avenue south-bound)
+                rew += 1
+            elif (
+                self.graph.has_edge(
+                    (self.p_row, self.p_col), (self.p_row, self.p_col + 1)
+                )
+                and self.grid[self.p_row][self.p_col + 1] == "S"
+            ):
+                # in front of an active red light (street east-bound)
+                rew += 1
+            elif (
+                self.graph.has_edge(
+                    (self.p_row, self.p_col), (self.p_row, self.p_col - 1)
+                )
+                and self.grid[self.p_row][self.p_col - 1] == "S"
+            ):
+                # in front of an active red light (street west-bound)
+                rew += 1
+        
         elif self.graph.has_edge((self.p_row, self.p_col), (future_row, future_col)):
             # player follows traffic flow (not driving in the opposite lane)
             # normal reward, continue episode
             rew += 1
             self._move_player(future_row, future_col)
         else:
-            # player does not follow traffic flow (driving in the opposite lane)
+            # player does not follow traffic flow (driving in the opposite lane, U-turning)
             # normal punishment, continue episode
             rew -= 1
             self._move_player(future_row, future_col)
@@ -88,7 +146,9 @@ class City:
         return rew, termination
 
     def _move_player(self, future_row, future_col):
-        self.grid[self.p_row][self.p_col] = self.prev_cell
+        self.grid[self.p_row][self.p_col] = (
+            self.prev_cell if self.prev_cell == 1 else self.stop_road
+        )
         self.prev_cell = self.grid[future_row][future_col]
         self.p_row, self.p_col = future_row, future_col
         self.grid[self.p_row][self.p_col] = "P"
@@ -113,7 +173,9 @@ if __name__ == "__main__":
     termination = False
 
     while not termination:
+        city.env_step()  # placing env_step here necessitates init-ing time at -1
         print(city)
         action = input("::")
         rew, termination = city.step(action)
         print(f"Reward: {rew}")
+        print("\n\n")
