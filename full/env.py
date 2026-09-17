@@ -1,3 +1,4 @@
+from graph import CityGraph
 from termcolor import colored
 
 
@@ -22,6 +23,7 @@ class City:
             )
             for j in range(num_rows)
         ]
+        self.graph = CityGraph(grid=self.grid)
 
         assert (
             self.grid[spawn_point[0]][spawn_point[1]] == 1
