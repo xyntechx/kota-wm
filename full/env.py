@@ -1,4 +1,4 @@
-from graph import CityGraph
+from .graph import CityGraph
 import random
 from termcolor import colored
 
@@ -362,7 +362,14 @@ class City:
 
 
 if __name__ == "__main__":
-    city = City(spawn_point=(random.randint(0, 15), random.randint(0, 11)))
+    is_valid_city = False
+    while not is_valid_city:
+        try:
+            city = City(spawn_point=(random.randint(0, 15), random.randint(0, 11)))
+            is_valid_city = True
+        except AssertionError:
+            is_valid_city = False
+
     termination = False
 
     while not termination:
