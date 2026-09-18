@@ -102,6 +102,8 @@ class City:
         Args:
         - action: str -- "W" (move North), "A" (move West), "S" (move South), "D" (move East)
         """
+        action = action.strip("_ACT").strip("_act")
+
         assert action in [
             "W",
             "A",
