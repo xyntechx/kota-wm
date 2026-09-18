@@ -339,7 +339,7 @@ class City:
             units = abs(target[0] - self.p_row)
 
         description = (
-            f"Turn {left_right} in {units} units."
+            f"Turn {left_right} in {units} unit{'s' if units > 1 else ''}."
             if random.random() > 0.5
             else f"Turn {left_right} on {road_number}{ordinal} {ave_st}."
         )
