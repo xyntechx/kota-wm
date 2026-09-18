@@ -133,7 +133,11 @@ class City:
 
         if (self.p_row, self.p_col) == (future_row, future_col):
             # player no-ops (stops)
-            if (
+            if self.prev_cell != 1:
+                # stops at a traffic light intersection
+                # medium punishment (blocking traffic), continue episode
+                rew -= self.MEDIUM_REW
+            elif (
                 self.graph.has_edge(
                     (self.p_row, self.p_col), (self.p_row - 1, self.p_col)
                 )
