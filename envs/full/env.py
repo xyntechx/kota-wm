@@ -102,7 +102,8 @@ class City:
         Args:
         - action: str -- "W" (move North), "A" (move West), "S" (move South), "D" (move East)
         """
-        action = action.strip("_ACT").strip("_act").strip("<BLANK>")
+        action = action.strip().upper()
+        action = "" if action == "<BLANK>" else action.removesuffix("_ACT")
 
         assert action in [
             "W",
@@ -364,13 +365,12 @@ class City:
 
 
 if __name__ == "__main__":
-    is_valid_city = False
-    while not is_valid_city:
+    while True:
         try:
-            city = City(spawn_point=(random.randint(0, 15), random.randint(0, 11)))
-            is_valid_city = True
+            city = City(spawn_point=(random.randrange(16), random.randrange(12)))
+            break
         except AssertionError:
-            is_valid_city = False
+            continue
 
     termination = False
 
