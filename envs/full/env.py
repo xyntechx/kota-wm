@@ -73,6 +73,9 @@ class City:
         self._dir_idx = 0
         self._need_new_task = True
 
+        # Keep track of number of consecutive no-ops to punish no-oping for too long
+        self._noops = 0
+
     def env_step(self):
         """
         Handles natural environment changes not caused by player actions.
@@ -136,6 +139,13 @@ class City:
 
         if (self.p_row, self.p_col) == (future_row, future_col):
             # player no-ops (stops)
+            self._noops += 1
+
+            if self._noops == 5:
+                # stays stationary for too long
+                # medium punishment (blocking traffic), continue episode
+                rew -= self.MEDIUM_REW
+
             if self.prev_cell != 1:
                 # stops at a traffic light intersection
                 # medium punishment (blocking traffic), continue episode
@@ -176,7 +186,10 @@ class City:
                 # in front of an active red light (street west-bound)
                 # normal reward, continue episode
                 rew += self.NORMAL_REW
+
             return rew, termination  # return early for no-op
+
+        self._noops = 0  # reset consecutive no-op count
 
         # Parallel IF blocks to handle multiple traffic rules being broken simultaneously when player is moving
         # Example: driving in the opposite lane while running an active red light
@@ -378,6 +391,7 @@ if __name__ == "__main__":
         city.env_step()  # placing env_step here necessitates init-ing time at -1
 
         print(f"[{city._task_idx}/{city.MAX_TASKS}] {city.task}")
+        print(city._noops)
         print(city)
         action = input("::").upper()
         rew, termination = city.step(action)
