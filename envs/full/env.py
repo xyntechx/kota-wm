@@ -141,7 +141,7 @@ class City:
             # player no-ops (stops)
             self._noops += 1
 
-            if self._noops == 5:
+            if self._noops >= 5:
                 # stays stationary for too long
                 # medium punishment (blocking traffic), continue episode
                 rew -= self.MEDIUM_REW
