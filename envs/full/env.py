@@ -106,7 +106,7 @@ class City:
         - action: str -- "W" (move North), "A" (move West), "S" (move South), "D" (move East)
         """
         action = action.strip().upper()
-        action = "" if action == "<BLANK>" else action.removesuffix("_ACT")
+        action = "" if action == "NOOP" else action.removesuffix("_ACT")
 
         assert action in [
             "W",
@@ -141,10 +141,16 @@ class City:
             # player no-ops (stops)
             self._noops += 1
 
-            if self._noops >= 5:
+            if self._noops == 5:
                 # stays stationary for too long
                 # medium punishment (blocking traffic), continue episode
                 rew -= self.MEDIUM_REW
+                self._noops = 0  # reset consecutive no-op count
+                self._need_new_task = True
+
+                if self._task_idx == self.MAX_TASKS:
+                    # terminate once MAX_TASKS tasks are generated
+                    termination = True
 
             if self.prev_cell != 1:
                 # stops at a traffic light intersection
@@ -226,13 +232,16 @@ class City:
                 # medium punishment, get new instructions, continue episode
                 rew -= self.MEDIUM_REW
                 self._need_new_task = True
+                if self._task_idx == self.MAX_TASKS:
+                    # terminate once MAX_TASKS tasks are generated
+                    termination = True
             elif self._dir_idx == len(self._task_directions) - 1:
                 # fulfilled current task in its entirety
                 # medium reward, get new instructions, continue episode
                 rew += self.MEDIUM_REW
                 self._need_new_task = True
                 if self._task_idx == self.MAX_TASKS:
-                    # terminate once MAX_TASKS tasks are fulfilled
+                    # terminate once MAX_TASKS tasks are generated
                     termination = True
             self._dir_idx += 1
 
