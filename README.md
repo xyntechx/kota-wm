@@ -2,4 +2,4 @@
 
 "Kota" means "city" in Bahasa Indonesia.
 
-**work in-progress**
+> 🚧 project is under construction
