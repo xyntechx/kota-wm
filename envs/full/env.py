@@ -7,7 +7,7 @@ class City:
     # Set reward/punishment values
     NORMAL_REW = 1
     MEDIUM_REW = 5
-    SEVERE_REW = 10
+    SEVERE_REW = 20
 
     # Set max number of tasks (1-indexed)
     MAX_TASKS = 10
@@ -229,16 +229,16 @@ class City:
         if action:  # not no-op, since we don't want to punish waiting for red light
             if action != self._task_directions[self._dir_idx]:
                 # deviate from instruction
-                # medium punishment, get new instructions, continue episode
-                rew -= self.MEDIUM_REW
+                # severe punishment, get new instructions, continue episode
+                rew -= self.SEVERE_REW
                 self._need_new_task = True
                 if self._task_idx == self.MAX_TASKS:
                     # terminate once MAX_TASKS tasks are generated
                     termination = True
             elif self._dir_idx == len(self._task_directions) - 1:
                 # fulfilled current task in its entirety
-                # medium reward, get new instructions, continue episode
-                rew += self.MEDIUM_REW
+                # severe reward, get new instructions, continue episode
+                rew += self.SEVERE_REW
                 self._need_new_task = True
                 if self._task_idx == self.MAX_TASKS:
                     # terminate once MAX_TASKS tasks are generated
@@ -256,25 +256,56 @@ class City:
         self.grid[self.p_row][self.p_col] = "P"
 
     def _generate_task(self):
+        return self.generate_task(self.p_row, self.p_col)
+
+    def generate_task(self, row, col):
         # pick one random out-edge from the player node
-        curr_row, curr_col = self.p_row, self.p_col
-        out_edge = random.choice(list(self.graph.out_edges((curr_row, curr_col))))
+        out_edge = random.choice(list(self.graph.out_edges((row, col))))
+        direction, diff, intersections = self._straight_run(out_edge)
 
-        # get direction (WASD)
-        diff_row, diff_col = out_edge[1][0] - self.p_row, out_edge[1][1] - self.p_col
-        direction = ""
+        # pick random intersection, randomly pick different out-edge (new direction / turn)
+        intersection = random.choice(list(intersections.keys()))
+        new_out_edges = self._turn_edges(intersection, diff)
+        if self.graph.out_degree(intersection) == 1:
+            new_out_edge = new_out_edges[0]
+        else:
+            new_out_edge = random.choice(new_out_edges)
+
+        return self._describe_task(
+            row,
+            col,
+            direction,
+            intersections[intersection],
+            intersection,
+            new_out_edge[1],
+            by_units=random.random() > 0.5,
+        )
+
+    def task_options(self, row, col):
+        options = []
+        for out_edge in self.graph.out_edges((row, col)):
+            direction, diff, intersections = self._straight_run(out_edge)
+            for intersection, num_repeat in intersections.items():
+                for new_out_edge in self._turn_edges(intersection, diff):
+                    for by_units in (True, False):
+                        options.append(
+                            self._describe_task(
+                                row,
+                                col,
+                                direction,
+                                num_repeat,
+                                intersection,
+                                new_out_edge[1],
+                                by_units,
+                            )
+                        )
+        return options
+
+    def _straight_run(self, out_edge):
+        (curr_row, curr_col), (next_row, next_col) = out_edge
+        diff_row, diff_col = next_row - curr_row, next_col - curr_col
+        direction = self._direction(diff_row, diff_col)
         num_repeat = 0
-        if diff_row == -1:
-            direction = "W"
-        elif diff_row == 1:
-            direction = "S"
-        elif diff_col == -1:
-            direction = "A"
-        elif diff_col == 1:
-            direction = "D"
-
-        # follow direction until the current node no longer has an out-edge that is in that direction
-        # keeping track of nodes with out-deg > 1 and final terminal node of the avenue/street (water-adjacent)
 
         # key is intersection coord, val is number of times current direction is repeated to reach the intersection
         intersections = {}
@@ -287,39 +318,39 @@ class City:
             if len(self.graph.out_edges((curr_row, curr_col))) > 1:
                 intersections[(curr_row, curr_col)] = num_repeat
         intersections[(curr_row, curr_col)] = num_repeat
+        return direction, (diff_row, diff_col), intersections
 
-        # pick random intersection, randomly pick different out-edge (new direction / turn)
-        intersection = random.choice(list(intersections.keys()))
+    def _turn_edges(self, intersection, diff):
+        diff_row, diff_col = diff
         new_out_edges = list(self.graph.out_edges((intersection[0], intersection[1])))
-        new_out_edge = None
-        if len(new_out_edges) == 1:
-            new_out_edge = new_out_edges[0]
-        else:
+        if len(new_out_edges) > 1:
             new_out_edges.remove(
                 (
                     (intersection[0], intersection[1]),
                     (intersection[0] + diff_row, intersection[1] + diff_col),
                 )
             )
-            new_out_edge = random.choice(new_out_edges)
+        return new_out_edges
 
+    @staticmethod
+    def _direction(diff_row, diff_col):
+        if diff_row == -1:
+            return "W"
+        elif diff_row == 1:
+            return "S"
+        elif diff_col == -1:
+            return "A"
+        elif diff_col == 1:
+            return "D"
+        return ""
+
+    def _describe_task(
+        self, row, col, direction, num_repeat, intersection, target, by_units
+    ):
         # get new direction (turn)
-        target = new_out_edge[1]
-        new_diff_row, new_diff_col = (
-            target[0] - intersection[0],
-            target[1] - intersection[1],
-        )
-        turn = ""
-        if new_diff_row == -1:
-            turn = "W"
-        elif new_diff_row == 1:
-            turn = "S"
-        elif new_diff_col == -1:
-            turn = "A"
-        elif new_diff_col == 1:
-            turn = "D"
+        turn = self._direction(target[0] - intersection[0], target[1] - intersection[1])
 
-        directions = [direction] * intersections[intersection] + [turn]
+        directions = [direction] * num_repeat + [turn]
 
         # build task description
         ave_st = "Avenue" if turn == "W" or turn == "S" else "Street"
@@ -359,13 +390,13 @@ class City:
 
         units = 0
         if turn == "W" or turn == "S":
-            units = abs(target[1] - self.p_col)
+            units = abs(target[1] - col)
         else:
-            units = abs(target[0] - self.p_row)
+            units = abs(target[0] - row)
 
         description = (
             f"Turn {left_right} in {units} unit{'s' if units > 1 else ''}."
-            if random.random() > 0.5
+            if by_units
             else f"Turn {left_right} on {road_number}{ordinal} {ave_st}."
         )
 

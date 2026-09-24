@@ -219,3 +219,6 @@ __marimo__/
 
 # Checkpoints downloaded from Modal
 checkpoints/
+
+# Local run checkpoints
+runs/
