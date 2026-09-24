@@ -1,5 +1,5 @@
 # kota-wm
 
-"Kota" means "city" in Bahasa Indonesia.
+Learning in imagination + memory-full model-based policy. This can be trained locally!
 
-> 🚧 project is under construction
+> "Kota" means "city" in Bahasa Indonesia.
