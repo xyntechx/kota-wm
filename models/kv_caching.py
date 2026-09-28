@@ -9,10 +9,10 @@ import torch
 
 
 class Cache:
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
+    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device, dtype: torch.dtype = None) -> None:
         assert embed_dim % num_heads == 0
         self._n, self._cache, self._size = num_samples, None, None
-        self._reset = lambda n: torch.empty(n, num_heads, max_tokens, embed_dim // num_heads, device=device)  # (B, nh, T, hs)
+        self._reset = lambda n: torch.empty(n, num_heads, max_tokens, embed_dim // num_heads, device=device, dtype=dtype)  # (B, nh, T, hs)
         self.reset()
 
     @property
@@ -40,9 +40,9 @@ class Cache:
 
 
 class KVCache:
-    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device) -> None:
-        self._k_cache = Cache(n, num_heads, max_tokens, embed_dim, device)
-        self._v_cache = Cache(n, num_heads, max_tokens, embed_dim, device)
+    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device, dtype: torch.dtype = None) -> None:
+        self._k_cache = Cache(n, num_heads, max_tokens, embed_dim, device, dtype)
+        self._v_cache = Cache(n, num_heads, max_tokens, embed_dim, device, dtype)
 
     @property
     def shape(self) -> Tuple[int, int, int, int]:
@@ -65,8 +65,8 @@ class KVCache:
 
 
 class KeysValues:
-    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, num_layers: int, device: torch.device) -> None:
-        self._keys_values = tuple([KVCache(n, num_heads, max_tokens, embed_dim, device) for _ in range(num_layers)])
+    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, num_layers: int, device: torch.device, dtype: torch.dtype = None) -> None:
+        self._keys_values = tuple([KVCache(n, num_heads, max_tokens, embed_dim, device, dtype) for _ in range(num_layers)])
 
     def __getitem__(self, key: int) -> KVCache:
         return self._keys_values[key]

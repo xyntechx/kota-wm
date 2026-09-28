@@ -9,11 +9,20 @@ from .transformer import Transformer, TransformerConfig
 
 class WorldModel(nn.Module):
     def __init__(
-        self, config: TransformerConfig, vocab_size: int, hidden=256, reward_scale=1.0
+        self,
+        config: TransformerConfig,
+        vocab_size: int,
+        hidden=256,
+        reward_scale=1.0,
+        outcome_features="action",
+        outcome_dim=None,
     ):
         super().__init__()
         self.config = config
         self.reward_scale = reward_scale
+        # What the reward/termination heads read; see dyna.action_outcomes.
+        self.outcome_features = outcome_features
+        outcome_dim = config.embed_dim if outcome_dim is None else outcome_dim
         self.embed = nn.Embedding(vocab_size, config.embed_dim)
         self.pos_emb = nn.Embedding(config.max_tokens, config.embed_dim)
         self.backbone = Transformer(config)
@@ -27,14 +36,14 @@ class WorldModel(nn.Module):
 
         # reward head
         self.rew_head = nn.Sequential(
-            nn.Linear(config.embed_dim, hidden),
+            nn.Linear(outcome_dim, hidden),
             nn.GELU(),
             nn.Linear(hidden, 1),  # output is float, MSE loss optimized
         )
 
         # termination head
         self.ter_head = nn.Sequential(
-            nn.Linear(config.embed_dim, hidden),
+            nn.Linear(outcome_dim, hidden),
             nn.GELU(),
             nn.Linear(hidden, 2),  # output is boolean
         )
@@ -55,8 +64,8 @@ class WorldModel(nn.Module):
     def max_tokens(self):
         return self.config.max_tokens
 
-    def generate_empty_keys_values(self, n: int) -> KeysValues:
-        return self.backbone.generate_empty_keys_values(n, self.max_tokens)
+    def generate_empty_keys_values(self, n: int, dtype=None) -> KeysValues:
+        return self.backbone.generate_empty_keys_values(n, self.max_tokens, dtype)
 
     def forward(
         self,

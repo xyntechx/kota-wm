@@ -1,3 +1,7 @@
+"""Evaluate a checkpoint's policy in the real environment and its world model on real transitions.
+
+    KOTA_OBS=compact KOTA_VOCAB=mode python evaluate.py <checkpoint.pt> --episodes 200
+"""
 import argparse
 import json
 
@@ -9,11 +13,13 @@ from dyna import (
     ACTION_TOKEN_IDS,
     OBS_MODE,
     STEP_LEN,
+    VOCAB_MODE,
     CachedContext,
     CityDataset,
     DynaConfig,
     RealCollector,
     Replay,
+    action_outcomes,
     build_models,
     collate_world_model,
     exploration_action,
@@ -31,7 +37,12 @@ def load_models(path, device="cpu"):
         raise ValueError(
             f"Checkpoint was trained with KOTA_OBS={checkpoint['obs_mode']}, not {OBS_MODE}"
         )
-    config = DynaConfig(**checkpoint["config"])
+    if checkpoint.get("vocab", "shared") != VOCAB_MODE:
+        raise ValueError(
+            f"Checkpoint was trained with KOTA_VOCAB={checkpoint.get('vocab', 'shared')}, not {VOCAB_MODE}"
+        )
+    # Checkpoints saved before outcome_features existed used action-token heads.
+    config = DynaConfig(**{"outcome_features": "action", **checkpoint["config"]})
     world_state, policy_state = checkpoint["world_model"], checkpoint["actor_critic"]
     world_model, policy = build_models(
         config,
@@ -73,7 +84,7 @@ def run_episodes(config, episodes, world_model=None, policy=None):
         for _ in range(episodes):
             city = random_city()
             session = (
-                CachedContext(world_model, observe(city))
+                CachedContext(world_model, observe(city), config.autocast)
                 if policy is not None
                 else None
             )
@@ -141,10 +152,7 @@ def evaluate_world_model(world_model, policy, config, transitions=256, batch_siz
                 (world_model.obs_head(h).argmax(-1)[mask] == y[mask]).sum().item()
             )
             counted += mask.sum().item()
-            rows = torch.arange(len(x), device=device)[:, None].expand_as(positions)
-            reward, termination_logits = world_model.outcomes(
-                h[rows[valid], positions[valid]]
-            )
+            (reward, termination_logits), _ = action_outcomes(world_model, h, positions)
             rewards, terminated = rewards[valid], terminated[valid]
             totals["reward_mse"] += ((reward - rewards) ** 2).sum().item()
             reward_correct += (reward.round() == rewards.round()).sum().item()

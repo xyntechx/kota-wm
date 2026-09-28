@@ -41,9 +41,9 @@ class Transformer(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
         self.ln_f = nn.LayerNorm(config.embed_dim)
 
-    def generate_empty_keys_values(self, n: int, max_tokens: int) -> KeysValues:
+    def generate_empty_keys_values(self, n: int, max_tokens: int, dtype: Optional[torch.dtype] = None) -> KeysValues:
         device = self.ln_f.weight.device  # Assumption that all submodules are on the same device
-        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, device)
+        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, device, dtype)
 
     def forward(self, sequences: torch.Tensor, past_keys_values: Optional[KeysValues] = None, key_valid: Optional[torch.Tensor] = None) -> torch.Tensor:
         assert past_keys_values is None or len(past_keys_values) == len(self.blocks)
@@ -76,6 +76,9 @@ class Block(nn.Module):
 
 
 class SelfAttention(nn.Module):
+    # Largest (B, heads, queries, keys) score tensor computed without a fused kernel.
+    SMALL_SCORES = 2 ** 26
+
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
         assert config.embed_dim % config.num_heads == 0
@@ -121,6 +124,12 @@ class SelfAttention(nn.Module):
             mask = mask & (key_valid[:, None, None, :] | itself)  # (B, 1, T, L + T)
         if self.causal and L == 0 and key_valid is None:
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=dropout_p)
+        elif L > 0 and dropout_p == 0.0 and B * self.num_heads * T * (L + T) <= self.SMALL_SCORES:
+            # Few queries against a long cache (decoding): the fused kernels tile queries
+            # in blocks of 64 and are ~10x slower here than one pass over the keys.
+            att = (q @ k.transpose(-2, -1)) * (1.0 / (k.size(-1) ** 0.5))
+            att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
+            y = att @ v
         else:
             y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout_p)
         y = rearrange(y, 'b h t e -> b t (h e)')

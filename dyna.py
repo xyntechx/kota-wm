@@ -11,11 +11,11 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 
 from envs.full.env import City
-from models.actor_critic import ActorCritic
+from models.actor_critic import ActorCritic, TokenActorCritic
 from models.transformer import TransformerConfig
 from models.world_model import WorldModel
 
-OBS_MODE = os.environ.get("KOTA_OBS", "grid")
+OBS_MODE = os.environ.get("KOTA_OBS", "compact")
 if OBS_MODE not in ("grid", "compact"):
     raise ValueError(f"KOTA_OBS must be 'grid' or 'compact', not {OBS_MODE!r}")
 
@@ -51,13 +51,17 @@ TASK_TEXTS = tuple(
 )
 assert set(TASK_TEXTS) == _ISSUABLE, "City issues invalid task"
 
+# "shared": one vocabulary for both observation modes. "mode": only the tokens
+# the current OBS_MODE can produce (no grid cells in compact, no row/col/stop in grid).
+VOCAB_MODE = os.environ.get("KOTA_VOCAB", "mode")
+if VOCAB_MODE not in ("shared", "mode"):
+    raise ValueError(f"KOTA_VOCAB must be 'shared' or 'mode', not {VOCAB_MODE!r}")
+_GRID_TOKENS = VOCAB_MODE == "shared" or OBS_MODE == "grid"
+_COMPACT_TOKENS = VOCAB_MODE == "shared" or OBS_MODE == "compact"
+
 TOKENS = [
     # obs
-    "0",
-    "1",
-    "A",
-    "S",
-    "P",
+    *(["0", "1", "A", "S", "P"] if _GRID_TOKENS else []),
     # act
     "W_act",
     "A_act",
@@ -69,10 +73,13 @@ TOKENS = [
     # task
     *TASK_TEXTS,
     # compact obs
-    *[f"row {r}" for r in range(16)],
-    *[f"col {c}" for c in range(12)],
-    "stop A",
-    "stop S",
+    *(
+        [f"row {r}" for r in range(16)]
+        + [f"col {c}" for c in range(12)]
+        + ["stop A", "stop S"]
+        if _COMPACT_TOKENS
+        else []
+    ),
     # pad
     "<PAD>",
 ]
@@ -80,7 +87,7 @@ TOKENS = [
 VOCAB = {token: i for i, token in enumerate(TOKENS)}
 VOCAB_SIZE = len(VOCAB)
 
-assert VOCAB_SIZE == 94
+assert VOCAB_SIZE == (94 if VOCAB_MODE == "shared" else 64 if OBS_MODE == "grid" else 89)
 
 GRID_ROWS, GRID_COLS = 16, 12
 # task index (1) + either the 16 x 12 grid or row/col/stop + task (1)
@@ -94,10 +101,11 @@ TASK_INDEX_POS, TASK_POS = 0, OUT_LEN - 1
 assert City.MAX_TASKS == 10
 TASK_INDEX_TOKEN_IDS = tuple(VOCAB[f"task {k}"] for k in range(1, City.MAX_TASKS + 1))
 TASK_TOKEN_IDS = tuple(VOCAB[t] for t in TASK_TEXTS)
-ROW_TOKEN_IDS = tuple(VOCAB[f"row {r}"] for r in range(GRID_ROWS))
-COL_TOKEN_IDS = tuple(VOCAB[f"col {c}"] for c in range(GRID_COLS))
-STOP_TOKEN_IDS = (VOCAB["stop A"], VOCAB["stop S"])
-CELL_TOKEN_IDS = tuple(VOCAB[t] for t in ("0", "1", "A", "S", "P"))
+# Empty when the mode-specific vocabulary leaves them out; only the matching mode reads them.
+ROW_TOKEN_IDS = tuple(VOCAB[f"row {r}"] for r in range(GRID_ROWS) if _COMPACT_TOKENS)
+COL_TOKEN_IDS = tuple(VOCAB[f"col {c}"] for c in range(GRID_COLS) if _COMPACT_TOKENS)
+STOP_TOKEN_IDS = tuple(VOCAB[t] for t in ("stop A", "stop S") if _COMPACT_TOKENS)
+CELL_TOKEN_IDS = tuple(VOCAB[t] for t in ("0", "1", "A", "S", "P") if _GRID_TOKENS)
 
 ACTION_NAMES = ("W", "A", "S", "D", "")
 ACTION_TOKEN_IDS = tuple(VOCAB[t] for t in ("W_act", "A_act", "S_act", "D_act", "NOOP"))
@@ -240,10 +248,19 @@ class Replay:
         return [(e, random.randrange(len(e))) for e in chosen]
 
 
+# Longer contexts are encoded through the KV cache in chunks of this many tokens:
+# a padded batch's attention mask is (B, T, T), which at grid-mode lengths runs to
+# tens of GiB when built in one piece. Same hidden states either way.
+PREFILL_CHUNK = 1024
+
+
 class CachedContext:
-    def __init__(self, world_model, rows):
+    def __init__(self, world_model, rows, autocast=False):
         self.world_model = world_model
         self.device = next(world_model.parameters()).device
+        # bf16 world-model forwards and KV cache on CUDA, as in world-model training
+        # with DynaConfig.autocast. Hidden states come back in float32.
+        self.autocast = autocast and self.device.type == "cuda"
         self.reset(rows)
 
     @staticmethod
@@ -260,6 +277,11 @@ class CachedContext:
     def batch_size(self):
         return len(self.tokens)
 
+    def _forward(self, idx):
+        with torch.autocast(self.device.type, torch.bfloat16, enabled=self.autocast):
+            h = self.world_model(idx, self.keys_values, self.pad_tensor)
+        return h.float()
+
     @property
     def length(self):
         """Padded length: the longest row's."""
@@ -273,13 +295,20 @@ class CachedContext:
         self.pad_tensor = (
             torch.tensor(self.pad, device=self.device) if any(self.pad) else None
         )
-        self.keys_values = self.world_model.generate_empty_keys_values(self.batch_size)
+        self.keys_values = self.world_model.generate_empty_keys_values(
+            self.batch_size, torch.bfloat16 if self.autocast else None
+        )
         idx = torch.tensor(
             [[VOCAB["<PAD>"]] * p + r for p, r in zip(self.pad, self.tokens)],
             dtype=torch.long,
             device=self.device,
         )
-        h = self.world_model(idx, self.keys_values, self.pad_tensor)
+        h = torch.cat(
+            [
+                self._forward(chunk) for chunk in idx.split(PREFILL_CHUNK, dim=1)
+            ],
+            dim=1,
+        )
         self.hidden = h[:, -1, :]
         self.obs_hidden = h[:, -OUT_LEN:, :]
 
@@ -300,7 +329,7 @@ class CachedContext:
         if self.length + len(rows[0]) > self.world_model.max_tokens:
             raise ValueError("Crop the context before appending beyond max_tokens")
         idx = torch.tensor(rows, dtype=torch.long, device=self.device)
-        h = self.world_model(idx, self.keys_values, self.pad_tensor)
+        h = self._forward(idx)
         for row, new in zip(self.tokens, rows):
             row.extend(new)
         self.hidden = h[:, -1, :]
@@ -331,10 +360,30 @@ class CachedContext:
         return tokens
 
 
-POLICY_FEATURES = ("both", "last", "mean")
+# "both", "last" and "mean" read world-model latents. "current" reads the same
+# "both" features, but from the world model encoding only the current observation
+# (no history in the policy's input). "obs" and "seq" feed a separate
+# token-level actor-critic (TokenActorCritic): the current observation alone, or
+# the same context the world model sees.
+POLICY_FEATURES = ("both", "last", "mean", "current", "obs", "seq")
+TOKEN_POLICY_FEATURES = ("obs", "seq")
 
 
 def policy_features(session, mode="both"):
+    if mode == "current":
+        rows = [row[-OUT_LEN:] for row in session.tokens]
+        idx = torch.tensor(rows, dtype=torch.long, device=session.device)
+        with torch.no_grad(), torch.autocast(
+            session.device.type, torch.bfloat16, enabled=session.autocast
+        ):
+            h = session.world_model(idx).float()
+        return torch.cat((h[:, -1], h.mean(dim=1)), dim=-1)
+    if mode == "obs":
+        rows = [row[-OUT_LEN:] for row in session.tokens]
+        return torch.tensor(rows, dtype=torch.long, device=session.device)
+    if mode == "seq":
+        rows = [[VOCAB["<PAD>"]] * p + row for p, row in zip(session.pad, session.tokens)]
+        return torch.tensor(rows, dtype=torch.long, device=session.device)
     if mode == "last":
         return session.hidden
     if mode == "mean":
@@ -345,7 +394,46 @@ def policy_features(session, mode="both"):
 
 
 def policy_input_dim(embed_dim, mode="both"):
-    return 2 * embed_dim if mode == "both" else embed_dim
+    return 2 * embed_dim if mode in ("both", "current") else embed_dim
+
+
+# "action+obs-sg" feeds the heads the same inputs as "action+obs" but detaches the
+# observation mean, so reward/termination losses reach the observation tokens'
+# hidden states only through attention, as with "action".
+OUTCOME_FEATURES = ("action", "action+obs", "action+obs-sg")
+
+
+def outcome_input_dim(embed_dim, mode="action"):
+    return embed_dim if mode == "action" else 2 * embed_dim
+
+
+def action_outcomes(world_model, h, positions):
+    """Reward and termination logits at every valid action position of h (B, T, C).
+
+    With world_model.outcome_features "action+obs" (or "action+obs-sg") the heads
+    also see the mean hidden state of the observation the action follows.
+    """
+    valid = positions >= 0
+    rows = torch.arange(len(h), device=h.device)[:, None].expand_as(positions)
+    rows, cols = rows[valid], positions[valid]
+    x = h[rows, cols]
+    if world_model.outcome_features != "action":
+        sums = F.pad(h.cumsum(dim=1), (0, 0, 1, 0))
+        obs_mean = (sums[rows, cols] - sums[rows, cols - OUT_LEN]) / OUT_LEN
+        if world_model.outcome_features == "action+obs-sg":
+            obs_mean = obs_mean.detach()
+        x = torch.cat((x, obs_mean.to(x.dtype)), dim=-1)
+    return world_model.outcomes(x), valid
+
+
+def step_outcomes(session, action_tokens):
+    """Append the actions to the session; return the predicted reward and termination logits."""
+    obs_mean = session.obs_hidden.mean(dim=1)
+    session.append(action_tokens)
+    x = session.hidden
+    if session.world_model.outcome_features != "action":
+        x = torch.cat((x, obs_mean), dim=-1)
+    return session.world_model.outcomes(x)
 
 
 class RealCollector:
@@ -359,6 +447,7 @@ class RealCollector:
         max_episode_steps=256,
         random_action_fraction=0.1,
         feature_mode="both",
+        autocast=False,
     ):
         if ctx_len < STEP_LEN or ctx_len % STEP_LEN:
             raise ValueError("ctx_len must contain whole timesteps")
@@ -379,6 +468,7 @@ class RealCollector:
         self.max_episode_steps = max_episode_steps
         self.random_action_fraction = random_action_fraction
         self.feature_mode = feature_mode
+        self.autocast = autocast
         self.total_steps = 0
         self.city = None
 
@@ -410,7 +500,9 @@ class RealCollector:
                     )
                 else:
                     if session is None:
-                        session = CachedContext(self.world_model, context)
+                        session = CachedContext(
+                            self.world_model, context, self.autocast
+                        )
                     dist, _ = self.policy(policy_features(session, self.feature_mode))
                     action_idx = dist.sample().item()
 
@@ -519,11 +611,8 @@ def world_model_losses(world_model, x, y, positions, rewards, terminated):
     token_loss = F.cross_entropy(
         logits.reshape(-1, logits.size(-1)), y.reshape(-1), ignore_index=-1
     )
-    valid = positions >= 0
-    rows = torch.arange(len(x), device=x.device)[:, None].expand_as(positions)
-    action_h = h[rows[valid], positions[valid]]
+    (reward, termination_logits), valid = action_outcomes(world_model, h, positions)
     rewards, terminated = rewards[valid], terminated[valid]
-    reward, termination_logits = world_model.outcomes(action_h)
     scale = world_model.reward_scale
     reward_loss = F.mse_loss(
         reward.float() / scale, rewards / scale
@@ -654,6 +743,7 @@ def imagine(
     sample_termination=False,
     from_real_context=True,
     feature_mode="both",
+    autocast=False,
 ):
     if num_rollouts < 1 or horizon < 1:
         raise ValueError("num_rollouts and horizon must be positive")
@@ -672,17 +762,17 @@ def imagine(
             if from_real_context:
                 # drop recorded action since policy chooses its own
                 contexts = [e.tokens(max(t - history_steps, 0), t) for e, t in chosen]
-                session = CachedContext(world_model, contexts)
+                session = CachedContext(world_model, contexts, autocast)
             else:
                 starts = []
                 for e, t in chosen:
                     context = e.tokens(max(t - history_steps, 0), t, with_action=True)
-                    single = CachedContext(world_model, context)
+                    single = CachedContext(world_model, context, autocast)
                     starts.append(
                         generate_observation(single, temperature, grid_temperature)[0]
                     )
                 # strict real/generated boundary: re-encode without the seeds.
-                session = CachedContext(world_model, starts)
+                session = CachedContext(world_model, starts, autocast)
             device = session.device
             action_token_ids = torch.tensor(ACTION_TOKEN_IDS, device=device)
             alive = torch.ones(B, dtype=torch.bool, device=device)
@@ -699,8 +789,9 @@ def imagine(
                 actions.append(action)
                 log_probs.append(dist.log_prob(action))
                 values.append(value)
-                session.append(action_token_ids[action])
-                reward, termination_logits = world_model.outcomes(session.hidden)
+                reward, termination_logits = step_outcomes(
+                    session, action_token_ids[action]
+                )
                 p_terminal = termination_logits.float().softmax(-1)[:, 1]
                 terminal = (
                     torch.bernoulli(p_terminal).bool()
@@ -725,6 +816,13 @@ def imagine(
                 torch.full((B,), steps, device=device),
             )
             pieces = {name: [] for name in ImaginedBatch.__dataclass_fields__}
+            if features[0].dtype == torch.long:
+                # Token contexts grow until cropped: left-pad every step to one width.
+                width = max(f.size(1) for f in features)
+                features = [
+                    F.pad(f, (width - f.size(1), 0), value=VOCAB["<PAD>"])
+                    for f in features
+                ]
             stacked = dict(
                 features=torch.stack(features, 1),
                 actions=torch.stack(actions, 1),
@@ -818,15 +916,17 @@ def train_policy(
     return metrics
 
 
+# Defaults are the abl2100 compact-vocab-wm-actobs configuration (with gpt-mini,
+# KOTA_OBS=compact and KOTA_VOCAB=mode); see sweeps/results/abl2100_report.md.
 @dataclass
 class DynaConfig:
-    context_steps: int = 24
+    context_steps: int = 64
     warmup_steps: int = 1024
     pretrain_updates: int = 100
     real_steps: int = 32
     world_updates: int = 30
-    world_batch_size: int = 4
-    imagined_rollouts: int = 32
+    world_batch_size: int = 64
+    imagined_rollouts: int = 64
     imagination_horizon: int = 16
     policy_epochs: int = 4
     policy_batch_size: int = 64
@@ -838,7 +938,7 @@ class DynaConfig:
     world_weight_decay: float = 0.1
     world_warmup_updates: int = 100
     world_dropout: float = 0.1
-    autocast: bool = False
+    autocast: bool = True
     policy_lr: float = 1e-4
     reward_scale: float = 20.0
     gamma: float = 0.995
@@ -848,6 +948,7 @@ class DynaConfig:
     sample_termination: bool = False
     imagine_from_real_context: bool = True
     policy_features: str = "both"
+    outcome_features: str = "action+obs"
     clip_eps: float = 0.2
     value_coef: float = 0.5
     value_clip: float = 0.2
@@ -905,6 +1006,8 @@ class DynaConfig:
             raise ValueError("Loss coefficients and weight decay must be non-negative")
         if self.policy_features not in POLICY_FEATURES:
             raise ValueError(f"policy_features must be one of {POLICY_FEATURES}")
+        if self.outcome_features not in OUTCOME_FEATURES:
+            raise ValueError(f"outcome_features must be one of {OUTCOME_FEATURES}")
         if self.world_warmup_updates < 0:
             raise ValueError("world_warmup_updates must be non-negative")
 
@@ -933,12 +1036,37 @@ def build_models(
         VOCAB_SIZE,
         hidden=wm_hidden_dim,
         reward_scale=config.reward_scale,
+        outcome_features=config.outcome_features,
+        outcome_dim=outcome_input_dim(embed_dim, config.outcome_features),
     ).to(device)
-    policy = ActorCritic(
-        policy_input_dim(embed_dim, config.policy_features),
-        len(ACTION_NAMES),
-        hidden=agent_hidden_dim,
-    ).to(device)
+    if config.policy_features in TOKEN_POLICY_FEATURES:
+        # Same backbone size as the world model, no dropout (PPO ratios need a
+        # deterministic policy), and a context of one observation or the whole window.
+        policy_config = TransformerConfig(
+            tokens_per_block=STEP_LEN,
+            max_blocks=1 if config.policy_features == "obs" else config.context_steps,
+            attention="causal",
+            num_layers=num_layers,
+            num_heads=num_heads,
+            embed_dim=embed_dim,
+            embed_pdrop=0.0,
+            resid_pdrop=0.0,
+            attn_pdrop=0.0,
+        )
+        policy = TokenActorCritic(
+            policy_config,
+            VOCAB_SIZE,
+            VOCAB["<PAD>"],
+            OUT_LEN,
+            len(ACTION_NAMES),
+            hidden=agent_hidden_dim,
+        ).to(device)
+    else:
+        policy = ActorCritic(
+            policy_input_dim(embed_dim, config.policy_features),
+            len(ACTION_NAMES),
+            hidden=agent_hidden_dim,
+        ).to(device)
     return world_model, policy
 
 
@@ -974,6 +1102,7 @@ class DynaTrainer:
             max_episode_steps=config.max_episode_steps,
             random_action_fraction=config.random_action_fraction,
             feature_mode=config.policy_features,
+            autocast=config.autocast,
         )
         self.world_optimizer = torch.optim.AdamW(
             world_param_groups(world_model, config.world_weight_decay),
@@ -1044,6 +1173,7 @@ class DynaTrainer:
             sample_termination=c.sample_termination,
             from_real_context=c.imagine_from_real_context,
             feature_mode=c.policy_features,
+            autocast=c.autocast,
         )
         with frozen_world(self.world_model):
             pi_metrics = train_policy(
