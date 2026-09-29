@@ -16,6 +16,7 @@ class WorldModel(nn.Module):
         reward_scale=1.0,
         outcome_features="action",
         outcome_dim=None,
+        return_head=False,
     ):
         super().__init__()
         self.config = config
@@ -46,6 +47,13 @@ class WorldModel(nn.Module):
             nn.Linear(outcome_dim, hidden),
             nn.GELU(),
             nn.Linear(hidden, 2),  # output is boolean
+        )
+
+        # optional auxiliary head: discounted return from this action (training only)
+        self.ret_head = (
+            nn.Sequential(nn.Linear(outcome_dim, hidden), nn.GELU(), nn.Linear(hidden, 1))
+            if return_head
+            else None
         )
 
         self.apply(self._init_weights)

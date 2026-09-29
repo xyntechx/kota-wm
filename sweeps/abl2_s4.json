@@ -1,0 +1,38 @@
+{
+ "name": "abl2-s4",
+ "defaults": {
+  "until": 2100,
+  "seed": 4,
+  "obs_mode": "compact",
+  "vocab": "mode",
+  "oracle": false,
+  "model_type": "gpt-mini",
+  "agent_hidden_dim": 1024,
+  "wm_hidden_dim": 1024,
+  "eval_episodes": 0,
+  "checkpoint_every": 100,
+  "snapshot_every": 100,
+  "snapshot_eval_episodes": 200,
+  "gpu": "L40S",
+  "config": {
+   "context_steps": 64,
+   "world_batch_size": 64,
+   "imagined_rollouts": 64,
+   "imagination_horizon": 16,
+   "world_updates": 30,
+   "autocast": true,
+   "outcome_features": "action+obs",
+   "outcome_loss_weight": 1.0,
+   "return_head": false
+  }
+ },
+ "runs": [
+  {
+   "name": "micro-horizon8",
+   "model_type": "gpt-micro",
+   "config": {
+    "imagination_horizon": 8
+   }
+  }
+ ]
+}

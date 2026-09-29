@@ -19,6 +19,12 @@ OBS_MODE = os.environ.get("KOTA_OBS", "compact")
 if OBS_MODE not in ("grid", "compact"):
     raise ValueError(f"KOTA_OBS must be 'grid' or 'compact', not {OBS_MODE!r}")
 
+# KOTA_ORACLE=1 (compact only): observations also carry the hidden task progress
+# (City._dir_idx, the task directions followed so far) as a "progress k" token.
+ORACLE = os.environ.get("KOTA_ORACLE", "0") == "1"
+if ORACLE and OBS_MODE != "compact":
+    raise ValueError("KOTA_ORACLE=1 needs KOTA_OBS=compact")
+
 _STATIC_CITY = City(spawn_point=(0, 0))
 
 # task is reachable if it follows the graph out-edge flow from curr node
@@ -31,6 +37,13 @@ REACHABLE_TASKS = {
 def _ordinal(k):
     return f"{k}{'st' if k == 1 else 'nd' if k == 2 else 'rd' if k == 3 else 'th'}"
 
+
+# Longest task, in directions; progress can reach it on an episode's final step.
+MAX_TASK_STEPS = max(
+    len(directions)
+    for node in _STATIC_CITY.graph.nodes
+    for _, directions in _STATIC_CITY.task_options(*node)
+)
 
 # each task is one token
 _ISSUABLE = frozenset().union(*REACHABLE_TASKS.values())
@@ -80,6 +93,8 @@ TOKENS = [
         if _COMPACT_TOKENS
         else []
     ),
+    # oracle task progress
+    *([f"progress {k}" for k in range(MAX_TASK_STEPS + 1)] if ORACLE else []),
     # pad
     "<PAD>",
 ]
@@ -87,11 +102,14 @@ TOKENS = [
 VOCAB = {token: i for i, token in enumerate(TOKENS)}
 VOCAB_SIZE = len(VOCAB)
 
-assert VOCAB_SIZE == (94 if VOCAB_MODE == "shared" else 64 if OBS_MODE == "grid" else 89)
+assert VOCAB_SIZE == (
+    (94 if VOCAB_MODE == "shared" else 64 if OBS_MODE == "grid" else 89)
+    + (MAX_TASK_STEPS + 1 if ORACLE else 0)
+)
 
 GRID_ROWS, GRID_COLS = 16, 12
 # task index (1) + either the 16 x 12 grid or row/col/stop + task (1)
-OUT_LEN = 1 + (GRID_ROWS * GRID_COLS if OBS_MODE == "grid" else 3) + 1
+OUT_LEN = 1 + (GRID_ROWS * GRID_COLS if OBS_MODE == "grid" else 3 + ORACLE) + 1
 # The task is not predicted by the world model, so it comes last: a generated
 # observation draws a new task from the ones City can issue at the generated
 # player position exactly when the generated task index advances, which needs
@@ -106,6 +124,7 @@ ROW_TOKEN_IDS = tuple(VOCAB[f"row {r}"] for r in range(GRID_ROWS) if _COMPACT_TO
 COL_TOKEN_IDS = tuple(VOCAB[f"col {c}"] for c in range(GRID_COLS) if _COMPACT_TOKENS)
 STOP_TOKEN_IDS = tuple(VOCAB[t] for t in ("stop A", "stop S") if _COMPACT_TOKENS)
 CELL_TOKEN_IDS = tuple(VOCAB[t] for t in ("0", "1", "A", "S", "P") if _GRID_TOKENS)
+PROGRESS_TOKEN_IDS = tuple(VOCAB[f"progress {k}"] for k in range(MAX_TASK_STEPS + 1) if ORACLE)
 
 ACTION_NAMES = ("W", "A", "S", "D", "")
 ACTION_TOKEN_IDS = tuple(VOCAB[t] for t in ("W_act", "A_act", "S_act", "D_act", "NOOP"))
@@ -189,6 +208,8 @@ def observe(city):
             VOCAB[f"col {city.p_col}"],
             VOCAB[f"stop {city.stop_road}"],
         ]
+        if ORACLE:
+            body.append(VOCAB[f"progress {city._dir_idx}"])
     else:
         body = [VOCAB[str(v)] for row in city.grid for v in row]
     return [VOCAB[f"task {city._task_idx}"]] + body + [tokenize_task(city.task)]
@@ -400,39 +421,60 @@ def policy_input_dim(embed_dim, mode="both"):
 # "action+obs-sg" feeds the heads the same inputs as "action+obs" but detaches the
 # observation mean, so reward/termination losses reach the observation tokens'
 # hidden states only through attention, as with "action".
-OUTCOME_FEATURES = ("action", "action+obs", "action+obs-sg")
+# "action+obs-all" feeds the heads every observation token's hidden state
+# (concatenated) instead of their mean.
+OUTCOME_FEATURES = ("action", "action+obs", "action+obs-sg", "action+obs-all")
+# Return-head targets are discounted returns divided by reward_scale * RETURN_SCALE.
+RETURN_SCALE = 10.0
 
 
 def outcome_input_dim(embed_dim, mode="action"):
-    return embed_dim if mode == "action" else 2 * embed_dim
+    if mode == "action":
+        return embed_dim
+    return (1 + OUT_LEN) * embed_dim if mode == "action+obs-all" else 2 * embed_dim
 
 
-def action_outcomes(world_model, h, positions):
-    """Reward and termination logits at every valid action position of h (B, T, C).
+def outcome_inputs(world_model, h, positions):
+    """Outcome-head inputs at every valid action position of h (B, T, C), and that mask.
 
     With world_model.outcome_features "action+obs" (or "action+obs-sg") the heads
-    also see the mean hidden state of the observation the action follows.
+    also see the mean hidden state of the observation the action follows; with
+    "action+obs-all", all of that observation's hidden states.
     """
     valid = positions >= 0
     rows = torch.arange(len(h), device=h.device)[:, None].expand_as(positions)
     rows, cols = rows[valid], positions[valid]
     x = h[rows, cols]
-    if world_model.outcome_features != "action":
+    mode = world_model.outcome_features
+    if mode == "action+obs-all":
+        offsets = torch.arange(-OUT_LEN, 0, device=h.device)
+        obs = h[rows[:, None], cols[:, None] + offsets]  # (N, OUT_LEN, C)
+        x = torch.cat((x, obs.flatten(1).to(x.dtype)), dim=-1)
+    elif mode != "action":
         sums = F.pad(h.cumsum(dim=1), (0, 0, 1, 0))
         obs_mean = (sums[rows, cols] - sums[rows, cols - OUT_LEN]) / OUT_LEN
-        if world_model.outcome_features == "action+obs-sg":
+        if mode == "action+obs-sg":
             obs_mean = obs_mean.detach()
         x = torch.cat((x, obs_mean.to(x.dtype)), dim=-1)
+    return x, valid
+
+
+def action_outcomes(world_model, h, positions):
+    """Reward and termination logits at every valid action position of h (B, T, C)."""
+    x, valid = outcome_inputs(world_model, h, positions)
     return world_model.outcomes(x), valid
 
 
 def step_outcomes(session, action_tokens):
     """Append the actions to the session; return the predicted reward and termination logits."""
-    obs_mean = session.obs_hidden.mean(dim=1)
+    obs_hidden = session.obs_hidden
     session.append(action_tokens)
     x = session.hidden
-    if session.world_model.outcome_features != "action":
-        x = torch.cat((x, obs_mean), dim=-1)
+    mode = session.world_model.outcome_features
+    if mode == "action+obs-all":
+        x = torch.cat((x, obs_hidden.flatten(1)), dim=-1)
+    elif mode != "action":
+        x = torch.cat((x, obs_hidden.mean(dim=1)), dim=-1)
     return session.world_model.outcomes(x)
 
 
@@ -542,6 +584,8 @@ def generate_observation(session, temperature=1.0, grid_temperature=None):
     if OBS_MODE == "compact":
         for ids in (ROW_TOKEN_IDS, COL_TOKEN_IDS, STOP_TOKEN_IDS):
             columns.append(session.sample(ids, grid_temperature))
+        if ORACLE:
+            columns.append(session.sample(PROGRESS_TOKEN_IDS, grid_temperature))
     else:
         cells = session.allowed_mask(CELL_TOKEN_IDS)
         placed = torch.zeros(B, dtype=torch.bool, device=session.device)
@@ -564,10 +608,31 @@ def generate_observation(session, temperature=1.0, grid_temperature=None):
     return torch.cat((generated, tasks[:, None]), dim=1).tolist()
 
 
+def discounted_returns(episode, gamma, complete):
+    """Discounted return from every step to the end of the episode (NaN if incomplete)."""
+    out = [float("nan")] * len(episode)
+    if complete:
+        running = 0.0
+        for t in reversed(range(len(episode))):
+            running = episode.rewards[t] + gamma * running
+            out[t] = running
+    return out
+
+
 class CityDataset(Dataset):
-    def __init__(self, replay, steps, tile=False):
+    """Windows of `steps` transitions. With `gamma`, items also carry each step's
+    discounted return (NaN for the replay's last episode unless it terminated,
+    since it may still be in progress)."""
+
+    def __init__(self, replay, steps, tile=False, gamma=None):
         if steps < 1:
             raise ValueError("Windows need at least one step")
+        self.gamma = gamma
+        self.returns = {}
+        if gamma is not None:
+            for i, episode in enumerate(replay.episodes):
+                complete = episode.terminated or i < len(replay.episodes) - 1
+                self.returns[id(episode)] = discounted_returns(episode, gamma, complete)
         self.windows = []
         for episode in replay.episodes:
             n = len(episode)
@@ -591,39 +656,54 @@ class CityDataset(Dataset):
         rewards = torch.tensor(episode.rewards[start:end], dtype=torch.float32)
         terminated = torch.zeros(end - start, dtype=torch.long)
         terminated[-1] = int(episode.terminated and end == n == len(episode))
-        return x, y, positions, rewards, terminated
+        if self.gamma is None:
+            return x, y, positions, rewards, terminated
+        returns = torch.tensor(self.returns[id(episode)][start:end], dtype=torch.float32)
+        return x, y, positions, rewards, terminated, returns
 
 
 def collate_world_model(batch):
-    xs, ys, positions, rewards, terminated = zip(*batch)
-    return (
-        pad_sequence(xs, batch_first=True, padding_value=VOCAB["<PAD>"]),
-        pad_sequence(ys, batch_first=True, padding_value=-1),
-        pad_sequence(positions, batch_first=True, padding_value=-1),
-        pad_sequence(rewards, batch_first=True),
-        pad_sequence(terminated, batch_first=True),
-    )
+    columns = list(zip(*batch))
+    out = [
+        pad_sequence(columns[0], batch_first=True, padding_value=VOCAB["<PAD>"]),
+        pad_sequence(columns[1], batch_first=True, padding_value=-1),
+        pad_sequence(columns[2], batch_first=True, padding_value=-1),
+        pad_sequence(columns[3], batch_first=True),
+        pad_sequence(columns[4], batch_first=True),
+    ]
+    if len(columns) > 5:  # returns
+        out.append(pad_sequence(columns[5], batch_first=True, padding_value=float("nan")))
+    return tuple(out)
 
 
-def world_model_losses(world_model, x, y, positions, rewards, terminated):
+def world_model_losses(
+    world_model, x, y, positions, rewards, terminated, returns=None, outcome_weight=1.0
+):
+    """Total loss (token + outcome_weight * (reward + termination) [+ return]) and parts.
+
+    The return loss is added only when the world model has a return head and
+    `returns` is given; parts are (token, reward, termination)."""
     h = world_model(x)
     logits = world_model.obs_head(h)
     token_loss = F.cross_entropy(
         logits.reshape(-1, logits.size(-1)), y.reshape(-1), ignore_index=-1
     )
-    (reward, termination_logits), valid = action_outcomes(world_model, h, positions)
+    features, valid = outcome_inputs(world_model, h, positions)
+    reward, termination_logits = world_model.outcomes(features)
     rewards, terminated = rewards[valid], terminated[valid]
     scale = world_model.reward_scale
     reward_loss = F.mse_loss(
         reward.float() / scale, rewards / scale
     )  # normalize reward based on env definition
     termination_loss = F.cross_entropy(termination_logits.float(), terminated)
-    return (
-        token_loss + reward_loss + termination_loss,
-        token_loss,
-        reward_loss,
-        termination_loss,
-    )
+    loss = token_loss + outcome_weight * (reward_loss + termination_loss)
+    if world_model.ret_head is not None and returns is not None:
+        returns = returns[valid]
+        known = ~returns.isnan()
+        if known.any():
+            predicted = world_model.ret_head(features[known]).squeeze(-1).float()
+            loss = loss + F.mse_loss(predicted, returns[known] / (scale * RETURN_SCALE))
+    return loss, token_loss, reward_loss, termination_loss
 
 
 def train_world_model(
@@ -635,8 +715,13 @@ def train_world_model(
     batch_size=2,
     scheduler=None,
     autocast=False,
+    outcome_weight=1.0,
+    return_gamma=None,
 ):
-    dataset = CityDataset(replay, window_steps)
+    """`return_gamma`: discount for the return head's targets (models with one)."""
+    if world_model.ret_head is None:
+        return_gamma = None
+    dataset = CityDataset(replay, window_steps, gamma=return_gamma)
     if not len(dataset):
         raise ValueError("Collect real transitions before training")
     loader = DataLoader(
@@ -658,7 +743,7 @@ def train_world_model(
             except StopIteration:
                 batches = iter(loader)
                 batch = next(batches)
-            x, y, positions, rewards, terminated = [v.to(device) for v in batch]
+            x, y, positions, rewards, terminated, *returns = [v.to(device) for v in batch]
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device.type,
@@ -666,7 +751,14 @@ def train_world_model(
                 enabled=autocast and device.type == "cuda",
             ):
                 loss, token_loss, reward_loss, termination_loss = world_model_losses(
-                    world_model, x, y, positions, rewards, terminated
+                    world_model,
+                    x,
+                    y,
+                    positions,
+                    rewards,
+                    terminated,
+                    returns[0] if returns else None,
+                    outcome_weight,
                 )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(world_model.parameters(), 1.0)
@@ -949,6 +1041,10 @@ class DynaConfig:
     imagine_from_real_context: bool = True
     policy_features: str = "both"
     outcome_features: str = "action+obs"
+    # Weight of the reward and termination losses relative to the token loss.
+    outcome_loss_weight: float = 1.0
+    # Auxiliary head predicting the discounted return (gamma) from the outcome-head input.
+    return_head: bool = False
     clip_eps: float = 0.2
     value_coef: float = 0.5
     value_clip: float = 0.2
@@ -1008,6 +1104,8 @@ class DynaConfig:
             raise ValueError(f"policy_features must be one of {POLICY_FEATURES}")
         if self.outcome_features not in OUTCOME_FEATURES:
             raise ValueError(f"outcome_features must be one of {OUTCOME_FEATURES}")
+        if self.outcome_loss_weight < 0:
+            raise ValueError("outcome_loss_weight must be non-negative")
         if self.world_warmup_updates < 0:
             raise ValueError("world_warmup_updates must be non-negative")
 
@@ -1038,6 +1136,7 @@ def build_models(
         reward_scale=config.reward_scale,
         outcome_features=config.outcome_features,
         outcome_dim=outcome_input_dim(embed_dim, config.outcome_features),
+        return_head=config.return_head,
     ).to(device)
     if config.policy_features in TOKEN_POLICY_FEATURES:
         # Same backbone size as the world model, no dropout (PPO ratios need a
@@ -1143,6 +1242,8 @@ class DynaTrainer:
             c.world_batch_size,
             scheduler=self.world_scheduler,
             autocast=c.autocast,
+            outcome_weight=c.outcome_loss_weight,
+            return_gamma=c.gamma if c.return_head else None,
         )
 
     def bootstrap(self):

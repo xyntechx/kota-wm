@@ -56,7 +56,8 @@ class OnnxStep(torch.nn.Module):
             # dyna.step_outcomes: also the mean hidden state of the out_len tokens
             # before the last one (the observation an appended action follows).
             before = torch.cat((obs_hidden_in, hidden), dim=1)[:, -(self.out_len + 1) : -1, :]
-            outcome_in = torch.cat((last, before.mean(dim=1)), dim=-1)
+            before = before.flatten(1) if self.outcome_mode == "action+obs-all" else before.mean(dim=1)
+            outcome_in = torch.cat((last, before), dim=-1)
         reward, termination_logits = wm.outcomes(outcome_in)
         termination = termination_logits.softmax(-1)[:, 1]
         features = {
@@ -183,6 +184,7 @@ def main():
     # dyna.py fixes OUT_LEN at import time from KOTA_OBS.
     os.environ["KOTA_OBS"] = checkpoint["obs_mode"]
     os.environ["KOTA_VOCAB"] = checkpoint.get("vocab", "shared")
+    os.environ["KOTA_ORACLE"] = "1" if checkpoint.get("oracle", False) else "0"
     sys.path.insert(0, str(args.kota_wm.resolve()))
     import dyna
     from evaluate import load_models

@@ -58,6 +58,7 @@ RUN_DEFAULTS = dict(
     config={},
     obs_mode="compact",  # or "grid": 194 tokens per step instead of 5 (dyna.OBS_MODE)
     vocab="mode",  # or "shared": one vocabulary for both encodings (dyna.VOCAB_MODE)
+    oracle=False,  # compact observations also carry the hidden task progress (dyna.ORACLE)
     model_type="gpt-mini",
     agent_hidden_dim=1024,
     wm_hidden_dim=1024,
@@ -85,13 +86,16 @@ def train_remote(run: dict):
 
     os.environ["KOTA_OBS"] = run.get("obs_mode", RUN_DEFAULTS["obs_mode"])  # before importing dyna
     os.environ["KOTA_VOCAB"] = run.get("vocab", RUN_DEFAULTS["vocab"])
+    os.environ["KOTA_ORACLE"] = "1" if run.get("oracle", RUN_DEFAULTS["oracle"]) else "0"
     import train
     import dyna
     from dyna import DynaConfig
 
-    wanted = (run.get("obs_mode", RUN_DEFAULTS["obs_mode"]), run.get("vocab", RUN_DEFAULTS["vocab"]))
-    if (dyna.OBS_MODE, dyna.VOCAB_MODE) != wanted:
-        raise RuntimeError(f"dyna was imported as {(dyna.OBS_MODE, dyna.VOCAB_MODE)}, run wants {wanted}")
+    wanted = tuple(run.get(k, RUN_DEFAULTS[k]) for k in ("obs_mode", "vocab", "oracle"))
+    if (dyna.OBS_MODE, dyna.VOCAB_MODE, dyna.ORACLE) != wanted:
+        raise RuntimeError(
+            f"dyna was imported as {(dyna.OBS_MODE, dyna.VOCAB_MODE, dyna.ORACLE)}, run wants {wanted}"
+        )
 
     unknown = set(run) - set(RUN_DEFAULTS) - {"name"}
     if unknown:
@@ -176,6 +180,7 @@ def evaluate_remote(snapshot: str, episodes: int = 200, seed: int = 0):
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     os.environ["KOTA_OBS"] = checkpoint["obs_mode"]  # before importing dyna
     os.environ["KOTA_VOCAB"] = checkpoint.get("vocab", "shared")
+    os.environ["KOTA_ORACLE"] = "1" if checkpoint.get("oracle", False) else "0"
     from evaluate import evaluate, load_models
 
     world_model, policy, config = load_models(path, device="cuda")

@@ -16,6 +16,7 @@ import torch
 from dyna import (
     MODEL_PRESETS,
     OBS_MODE,
+    ORACLE,
     VOCAB_MODE,
     DynaConfig,
     DynaTrainer,
@@ -47,6 +48,7 @@ def save_checkpoint(path, config, model_type, world_model, actor_critic, trainer
             "model_type": model_type,
             "obs_mode": OBS_MODE,
             "vocab": VOCAB_MODE,
+            "oracle": ORACLE,
             "world_model": world_model.state_dict(),
             "actor_critic": actor_critic.state_dict(),
             "world_optimizer": trainer.world_optimizer.state_dict(),
@@ -111,6 +113,8 @@ def load_checkpoint(path, world_model, actor_critic, trainer):
         raise ValueError(
             f"Checkpoint uses KOTA_OBS={checkpoint['obs_mode']}, not {OBS_MODE}"
         )
+    if checkpoint.get("oracle", False) != ORACLE:
+        raise ValueError(f"Checkpoint uses KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}")
     if checkpoint.get("vocab", "shared") != VOCAB_MODE:
         raise ValueError(
             f"Checkpoint uses KOTA_VOCAB={checkpoint.get('vocab', 'shared')}, not {VOCAB_MODE}"
@@ -242,6 +246,7 @@ def train(
         config=asdict(config),
         obs_mode=OBS_MODE,
         vocab=VOCAB_MODE,
+        oracle=ORACLE,
         model_type=model_type,
         agent_hidden_dim=agent_hidden_dim,
         wm_hidden_dim=wm_hidden_dim,

@@ -12,6 +12,7 @@ from dyna import (
     ACTION_NAMES,
     ACTION_TOKEN_IDS,
     OBS_MODE,
+    ORACLE,
     STEP_LEN,
     VOCAB_MODE,
     CachedContext,
@@ -37,6 +38,8 @@ def load_models(path, device="cpu"):
         raise ValueError(
             f"Checkpoint was trained with KOTA_OBS={checkpoint['obs_mode']}, not {OBS_MODE}"
         )
+    if checkpoint.get("oracle", False) != ORACLE:
+        raise ValueError(f"Checkpoint was trained with KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}")
     if checkpoint.get("vocab", "shared") != VOCAB_MODE:
         raise ValueError(
             f"Checkpoint was trained with KOTA_VOCAB={checkpoint.get('vocab', 'shared')}, not {VOCAB_MODE}"
