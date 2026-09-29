@@ -1008,8 +1008,9 @@ def train_policy(
     return metrics
 
 
-# Defaults are the abl2100 compact-vocab-wm-actobs configuration (with gpt-mini,
-# KOTA_OBS=compact and KOTA_VOCAB=mode); see sweeps/results/abl2100_report.md.
+# Defaults are the abl2 micro-horizon8 configuration: compact-vocab-wm-actobs
+# (KOTA_OBS=compact, KOTA_VOCAB=mode) with gpt-micro and imagination horizon 8;
+# see sweeps/results/abl2100_report.md.
 @dataclass
 class DynaConfig:
     context_steps: int = 64
@@ -1019,7 +1020,7 @@ class DynaConfig:
     world_updates: int = 30
     world_batch_size: int = 64
     imagined_rollouts: int = 64
-    imagination_horizon: int = 16
+    imagination_horizon: int = 8
     policy_epochs: int = 4
     policy_batch_size: int = 64
     epsilon: float = 0.3

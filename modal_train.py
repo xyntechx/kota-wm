@@ -59,7 +59,7 @@ RUN_DEFAULTS = dict(
     obs_mode="compact",  # or "grid": 194 tokens per step instead of 5 (dyna.OBS_MODE)
     vocab="mode",  # or "shared": one vocabulary for both encodings (dyna.VOCAB_MODE)
     oracle=False,  # compact observations also carry the hidden task progress (dyna.ORACLE)
-    model_type="gpt-mini",
+    model_type="gpt-micro",
     agent_hidden_dim=1024,
     wm_hidden_dim=1024,
     seed=3407,
@@ -244,7 +244,7 @@ def main(
     run_name: str = "",
     config: str = "{}",
     obs_mode: str = "compact",
-    model_type: str = "gpt-mini",
+    model_type: str = "gpt-micro",
     agent_hidden_dim: int = 1024,
     wm_hidden_dim: int = 1024,
     seed: int = 3407,
@@ -361,7 +361,7 @@ def probe_memory_remote(model_type: str, context_steps: int, batch_sizes: list, 
 
 @app.local_entrypoint()
 def probe_memory(
-    model_type: str = "gpt-mini",
+    model_type: str = "gpt-micro",
     context_steps: int = 64,
     batch_sizes: str = "1,4,8,12,16,24,32",
     autocast: bool = True,

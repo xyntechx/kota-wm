@@ -1,4 +1,4 @@
-"""Train the Dyna world model and policy (defaults: compact-vocab-wm-actobs with gpt-mini).
+"""Train the Dyna world model and policy (defaults: micro-horizon8, i.e. compact-vocab-wm-actobs with gpt-micro and horizon 8).
 
     python train.py --until 2100 --out-dir runs/my-run
 """
@@ -148,7 +148,7 @@ def train(
     until=None,
     time_limit=None,
     out_dir=".",
-    model_type="gpt-mini",
+    model_type="gpt-micro",
     agent_hidden_dim=1024,
     wm_hidden_dim=1024,
     seed=3407,
@@ -297,7 +297,7 @@ def parse_args(argv=None):
         "--until", type=int, default=None, help="train up to this iteration (overrides --iterations)"
     )
     parser.add_argument("--out-dir", default=".")
-    parser.add_argument("--model-type", default="gpt-mini", choices=sorted(MODEL_PRESETS))
+    parser.add_argument("--model-type", default="gpt-micro", choices=sorted(MODEL_PRESETS))
     parser.add_argument("--agent-hidden-dim", type=int, default=1024)
     parser.add_argument("--wm-hidden-dim", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=3407)

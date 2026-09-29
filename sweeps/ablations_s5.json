@@ -13,7 +13,8 @@
    "world_batch_size": 64,
    "imagined_rollouts": 64,
    "autocast": true,
-   "outcome_features": "action"
+   "outcome_features": "action",
+   "imagination_horizon": 16
   },
   "snapshot_every": 100,
   "snapshot_eval_episodes": 200,

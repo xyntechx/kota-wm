@@ -2,7 +2,7 @@
 
 All runs were trained on Modal from scratch to iteration 2100. Each policy was scored in the real `City` environment every 100 iterations. The compact configurations were run with seeds 3, 4 and 5. The grid runs have seed 3 only and were stopped early. The canonical baseline is `compact-base`: **219.0 ± 13.3 final return (mean ± SE over 3 seeds; per seed 244 / 198 / 216) and 89.7% task completion**.
 
-The 3-seed results in the next section supersede the single-seed conclusions. The single-seed (seed 3) analysis follows further down for reference.
+A second round of ablations (`abl2`) built on the resulting default and is summarized in "Second round (abl2)" below; it made `micro-horizon8` (gpt-micro, imagination horizon 8) the new default. The 3-seed results in the next section supersede the single-seed conclusions. The single-seed (seed 3) analysis follows further down for reference.
 
 ## Headline (3 seeds)
 
@@ -94,11 +94,63 @@ This config combines the mode-specific (89-token) vocabulary with `outcome_featu
 
 ### Website model
 
-- **Installed in the Website repo (not yet committed or deployed):** the best `compact-vocab-wm-actobs` snapshot (seed 5, iteration 1800) is exported to `Website/public/models/kota-wm.onnx`. The site's token list (`app/_kota/tokens.ts`) now uses the 89-token compact vocabulary, and it matches the checkpoint's vocabulary id for id. The model cache name was bumped to `kota-v5`.
-- **Export verification:** `export_onnx.py --verify` matched PyTorch to within 8e-5 over a 600-step rollout with 9 context crops.
-- **Previous models** are backed up in `kota-wm/checkpoints/website-backup/`:
+- **Current (installed in the Website repo, not yet committed or deployed):** the best `micro-horizon8` snapshot (seed 5, iteration 1900: 262.2 ± 1.9, 98.6% completion) is exported to `Website/public/models/kota-wm.onnx` (11.7 MB, down from 21.2 MB). `app/_kota/model.ts` now expects 4 layers and 4 heads (gpt-micro), and its cache name was bumped to `kota-v6`. The 89-token vocabulary is unchanged. `export_onnx.py --verify` matched PyTorch to within 7e-5 over a 600-step rollout with 9 context crops.
+- **Previous site model (committed as "new best model with compact vocab"):** the best `compact-vocab-wm-actobs` snapshot (seed 5, iteration 1800: 259.1 ± 2.2). It needs 6 layers and 6 heads.
+- **Backups** in `kota-wm/checkpoints/website-backup/`:
   - `kota-wm.2026-09-24.onnx`: the original site model, 177.0 on this evaluator
-  - `kota-wm.wm-actobs-s4-iter2000.onnx`: the best shared-vocabulary `wm-actobs` snapshot, 260.0. It needs the 94-token list.
+  - `kota-wm.wm-actobs-s4-iter2000.onnx`: the best shared-vocabulary `wm-actobs` snapshot, 260.0. It needs the 94-token list and 6 layers/heads.
+  - `kota-wm.vocab-wm-actobs-s5-iter1800.onnx`: the previous site model above.
+
+## Second round (abl2)
+
+Every `abl2` run starts from the `compact-vocab-wm-actobs` configuration (the default at the time) and changes one thing. The spec is `sweeps/abl2.json`, with every setting pinned, and the per-snapshot data is in `sweeps/results/abl2_evals.json`. Each config was run with seed 3 only, except `micro-horizon8`, which has seeds 3, 4 and 5 (`sweeps/abl2_s4.json`, `sweeps/abl2_s5.json`). For reference, the base config's late average (iterations 1900–2100) was 238 / 244 / 248 over its three seeds, so a single-seed result is notable roughly outside 233–253.
+
+New options added for this round (all off by default): `outcome_loss_weight` (weight on the reward and termination losses), `return_head` (predicts the discounted return from the outcome-head input; training only), `outcome_features="action+obs-all"` (the heads see all 5 observation hidden states instead of their mean), and `KOTA_ORACLE=1` (compact observations also carry the hidden task progress, `City._dir_idx`, as a `progress k` token).
+
+| Run (seed 3) | Changes | Late avg | Final (2100) | Completion | First ≥ 200 | s/iter |
+|---|---|---|---|---|---|---|
+| base (3 seeds) | — | 238–248 | 246 (seed 3) | 0.957 | 500 / 800 / 900 | 2.1 |
+| **oracle** | task progress in the observation | **260** | **264** | **0.987** | 700 | 2.2 |
+| gpt-micro | 4 layers, 128 dims | 248 | 250 | 0.936 | 600 | **1.3** |
+| horizon8 | imagination horizon 8 | 247 | 251 | 0.979 | 900 | 1.6 |
+| obs-all | heads see all 5 observation states | 247 | 250 | 0.957 | 700 | 2.1 |
+| wupd15 | 15 world updates per iteration | 246 | 251 | 0.961 | 1000 | 1.7 |
+| loss-w3 | reward/termination loss ×3 | 250 | 236 | 0.923 | 600 | 2.1 |
+| horizon32 | imagination horizon 32 | 244 | 245 | 0.934 | 900 | 3.0 |
+| loss-w10 | reward/termination loss ×10 | 240 | 245 | 0.949 | 600 | 2.1 |
+| wupd60 | 60 world updates per iteration | 237 | 249 | 0.960 | 700 | 2.8 |
+| ctx32 | 32 context steps | 236 | 226 | 0.918 | 800 | 2.1 |
+| return-head | return-prediction head | 228 | 243 | 0.948 | 1000 | 2.2 |
+| ctx16 | 16 context steps | 221 | 226 | 0.901 | 1100 | 2.1 |
+| gopher-44m | 8 layers, 512 dims | 213 | 181 | 0.866 | 1400 | 3.4 |
+| ctx8 | 8 context steps | 205 | 220 | 0.885 | 1500 | 2.0 |
+
+Findings (single seed each):
+- **Memory length matters, and the model's memory is imperfect.** Return rises with context length (205 at 8 steps, 221 at 16, 236 at 32, 238–248 at 64). The oracle, which sees task progress directly, beats every base seed (260, 98.7% completion), so about 15 points are still lost to imperfect memory. The oracle changes the environment's observation, so it isn't deployable, but better memory is the most promising direction.
+- **Smaller is as good; bigger is worse.** `gpt-micro` matches gpt-mini at about 40% less time per iteration. `gopher-44m` learns slowly and is unstable, and would probably need a different learning rate or longer training.
+- **Shaping the latents further doesn't help.** Heavier loss weights and the all-5-states heads match the base; the return head slows early learning. `action+obs` already captures the benefit.
+- **Schedule changes cost speed, not results.** Horizons 8 and 32 and 15 or 60 world updates all reach the base score. Horizon 8 is ~25% faster per iteration; 15 world updates is faster but starts slower.
+
+**Why a shorter imagination horizon doesn't hurt.** Results are insensitive to horizon between 8 and 32, for three reasons:
+1. The critic covers everything past the horizon. Imagined returns are λ-returns that bootstrap from the value estimate at the last imagined step; with γ = 0.995 and λ = 0.95 the effective credit-assignment window is about 1/(1 − γλ) ≈ 18 steps, and later rewards are heavily discounted.
+2. Imagined rollouts drift from reality. Each rollout starts from a real replay state, then the model generates its own observations, and errors compound. Short rollouts stay near real states, where the model is most accurate, which offsets having half as many imagined samples per update.
+3. Credit assignment in this task is short-range: rewards are dense and tasks last at most 16 steps.
+
+### micro-horizon8 (3 seeds): the new default
+
+Combining `gpt-micro` with horizon 8:
+
+| Config (3 seeds) | Final (mean ± SE) | Per seed | Late avg | Completion | First ≥ 200 per seed | Time per run |
+|---|---|---|---|---|---|---|
+| **micro-horizon8** | **254.3 ± 0.5** | 255 / 254 / 254 | 247.5 ± 4.8 | **0.975** | **500 / 600 / 600** | **0.5–0.7 h** (0.9–1.25 s/it) |
+| base (compact-vocab-wm-actobs) | 244.4 ± 2.9 | 246 / 239 / 248 | 243.1 ± 2.7 | 0.943 | 500 / 800 / 900 | ~1.2 h (~2.1 s/it) |
+
+| Seed-mean return | 300 | 500 | 700 | 900 | 1200 | 1500 | 1800 | 2100 |
+|---|---|---|---|---|---|---|---|---|
+| micro-horizon8 | 107 | 179 | 217 | 234 | 238 | 240 | 251 | 254 |
+| base | 92 | 176 | 173 | 216 | 233 | 244 | 246 | 244 |
+
+It is at least as good as the base: the late average is statistically the same (+4.4 ± 5.6), and the final checkpoints are higher and very consistent (254–255), though that's one evaluation per seed. It learns faster through mid-training (217 vs 173 at iteration 700), and takes about 40–60% less wall time. Most of the speedup comes from `gpt-micro` (1.3 s/it alone vs 1.25 combined), because a model this small is limited by per-step overhead, so the shorter horizon saves little extra. Its best snapshot (seed 5, iteration 1900: 262.2 ± 1.9, 98.6% completion) is the site model.
 
 ## Single-seed analysis (seed 3)
 
@@ -247,7 +299,7 @@ Healthy compact world models converge to about the same accuracy regardless of p
 
 (Written after the 3-seed runs; step 1 of the original list, the seed reruns, is done.)
 
-1. **Done: `compact-vocab-wm-actobs` is now the default.** Across 3 seeds `action+obs` is +26 to +31 at the end, with either vocabulary, and about twice as fast to 200 return; the stop-gradient control confirms its mechanism. Bare `DynaConfig()`, `train.py` and `modal_train.py` now give compact observations, the mode-specific vocabulary, `outcome_features="action+obs"`, gpt-mini, 64 context steps, world batch 64, 64 imagined rollouts and bf16 autocast. The sweep specs pin the old values (`vocab: shared`, `outcome_features: action`), so they still reproduce the recorded runs.
+1. **Done, then superseded: `compact-vocab-wm-actobs` became the default,** and after the second round `micro-horizon8` (the same with `model_type="gpt-micro"` and `imagination_horizon=8`) replaced it. Bare `DynaConfig()` equals the `micro-horizon8` config, `train.py` and `modal_train.py` default to gpt-micro, and all six sweep specs pin their own settings (52 recorded runs checked). Originally: Across 3 seeds `action+obs` is +26 to +31 at the end, with either vocabulary, and about twice as fast to 200 return; the stop-gradient control confirms its mechanism. Bare `DynaConfig()`, `train.py` and `modal_train.py` now give compact observations, the mode-specific vocabulary, `outcome_features="action+obs"`, gpt-mini, 64 context steps, world batch 64, 64 imagined rollouts and bf16 autocast. The sweep specs pin the old values (`vocab: shared`, `outcome_features: action`), so they still reproduce the recorded runs.
 2. **Vocabulary.** Either vocabulary is fine; they're computationally equivalent. Keeping the mode-specific one is tidier.
 3. **Grid mode.** It needs a way for the world model to locate the player, e.g. an auxiliary position target, or reading the head at the player's cell. Scaling iterations alone probably won't fix it.
 
