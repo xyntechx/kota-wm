@@ -1,5 +1,5 @@
 """
-Credits to and taken from https://github.com/eloialonso/iris
+Credits to https://github.com/eloialonso/iris
 """
 
 from typing import Tuple

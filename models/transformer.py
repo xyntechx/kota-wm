@@ -1,6 +1,5 @@
 """
-Credits to https://github.com/karpathy/minGPT
-Taken from https://github.com/eloialonso/iris
+Credits to https://github.com/karpathy/minGPT, https://github.com/eloialonso/iris
 """
 
 from dataclasses import dataclass
