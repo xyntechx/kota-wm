@@ -1,0 +1,68 @@
+{
+ "name": "mf2",
+ "defaults": {
+  "total_steps": 20000000,
+  "eval_every": 500000,
+  "eval_episodes": 200,
+  "config": {}
+ },
+ "runs": [
+  {
+   "name": "gru-warm-s3",
+   "seed": 3,
+   "config": {
+    "arch": "gru",
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  },
+  {
+   "name": "obs-warm-s3",
+   "seed": 3,
+   "config": {
+    "arch": "mlp",
+    "context_steps": 1,
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  },
+  {
+   "name": "gru-warm-s4",
+   "seed": 4,
+   "config": {
+    "arch": "gru",
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  },
+  {
+   "name": "obs-warm-s4",
+   "seed": 4,
+   "config": {
+    "arch": "mlp",
+    "context_steps": 1,
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  },
+  {
+   "name": "gru-warm-s5",
+   "seed": 5,
+   "config": {
+    "arch": "gru",
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  },
+  {
+   "name": "obs-warm-s5",
+   "seed": 5,
+   "config": {
+    "arch": "mlp",
+    "context_steps": 1,
+    "explore_eps": 0.3,
+    "warmup_steps": 1024
+   }
+  }
+ ]
+}

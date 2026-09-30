@@ -1,6 +1,6 @@
 # abl2100: ablation report (gpt-mini, 2100 iterations, seeds 3/4/5)
 
-All runs were trained on Modal from scratch to iteration 2100. Each policy was scored in the real `City` environment every 100 iterations. The compact configurations were run with seeds 3, 4 and 5. The grid runs have seed 3 only and were stopped early. The canonical baseline is `compact-base`: **219.0 ± 13.3 final return (mean ± SE over 3 seeds; per seed 244 / 198 / 216) and 89.7% task completion**.
+All runs were trained on Modal from scratch to iteration 2100. Each policy was scored in the real `City` environment every 100 iterations. The compact configurations were run with seeds 3, 4 and 5. The grid runs have seed 3 only; the original two were stopped early, and a later grid copy of `micro-horizon8` (`grid2`) ran to 2100. The canonical baseline is `compact-base`: **219.0 ± 13.3 final return (mean ± SE over 3 seeds; per seed 244 / 198 / 216) and 89.7% task completion**.
 
 A second round of ablations (`abl2`) built on the resulting default and is summarized in "Second round (abl2)" below; it made `micro-horizon8` (gpt-micro, imagination horizon 8) the new default. The 3-seed results in the next section supersede the single-seed conclusions. The single-seed (seed 3) analysis follows further down for reference.
 
@@ -16,7 +16,7 @@ A second round of ablations (`abl2`) built on the resulting default and is summa
 | bf16 autocast? | No measurable effect (`baseline-exact` − `base`: −20 ± 26). |
 | Is memory needed? | **Yes.** Shared latents from the current observation alone (`pi-current`) score −92 ± 32 vs the baseline (122 final, all 3 seeds below 145). The environment hides progress within the current task, so the policy needs history. |
 | Separating policy and world model? | It hurts. A separate policy transformer over the same context (`pi-seq`) reaches 67 ± 7; one on the latest observation only (`pi-obs`) reaches 167 ± 6. A policy that must learn its own representation from PPO alone is far less sample-efficient than one reading world-model latents. |
-| Grid mode vs compact? (seed 3 only) | Grid mode fails at this budget. The policy drives off-road within 2–4 steps (≈ −20 return), because the grid world model can't learn reward or termination (reward accuracy 0.2–0.4). Both grid runs were stopped at iterations 1000 and 900. |
+| Grid mode vs compact? (seed 3 only) | The original grid runs failed. Their policies drove off-road within 2–4 steps (≈ −20 return), because the grid world model couldn't learn reward or termination (reward accuracy 0.2–0.4); they were stopped at iterations 1000 and 900. A later grid copy of `micro-horizon8` (`grid2`, see "Grid mode with the micro-horizon8 settings") does learn: flat until about iteration 700, then 86.5 at 2100 and still rising, against compact's 255. |
 
 ## Multi-seed results (seeds 3, 4, 5)
 
@@ -151,6 +151,36 @@ Combining `gpt-micro` with horizon 8:
 | base | 92 | 176 | 173 | 216 | 233 | 244 | 246 | 244 |
 
 It is at least as good as the base: the late average is statistically the same (+4.4 ± 5.6), and the final checkpoints are higher and very consistent (254–255), though that's one evaluation per seed. It learns faster through mid-training (217 vs 173 at iteration 700), and takes about 40–60% less wall time. Most of the speedup comes from `gpt-micro` (1.3 s/it alone vs 1.25 combined), because a model this small is limited by per-step overhead, so the shorter horizon saves little extra. Its best snapshot (seed 5, iteration 1900: 262.2 ± 1.9, 98.6% completion) is the site model.
+
+### Grid mode with the micro-horizon8 settings (grid2, seed 3)
+
+`grid2/micro-horizon8-grid` copies `abl2/micro-horizon8` exactly and switches only `obs_mode` to `"grid"`. That means gpt-micro, imagination horizon 8, `outcome_features="action+obs"`, the mode-specific vocabulary (64 tokens), 64 context steps, world batch 64, 64 imagined rollouts and seed 3. It ran on an H100 to iteration 2100. The spec is `sweeps/grid2.json` and the per-snapshot data is in `sweeps/results/grid2_evals.json`.
+
+**It is the first grid run that learns.** It stayed near the off-road penalty through iteration 700, like the earlier grid runs, and then climbed without a break to **86.5 ± 3.2 at iteration 2100 (72.8% completion)**. It was still rising steeply at the end: +28 over the last 100 iterations.
+
+| Iteration | 500 | 700 | 900 | 1000 | 1200 | 1400 | 1600 | 1800 | 1900 | 2000 | 2100 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Return | −25.7 | −21.7 | −16.1 | −13.2 | −1.2 | 6.8 | 30.8 | 37.1 | 50.5 | 58.5 | **86.5** |
+| Completion | 0.08 | 0.24 | 0.56 | 0.55 | 0.64 | 0.65 | 0.71 | 0.68 | 0.68 | 0.68 | 0.73 |
+| Episode length | 5.7 | 2.7 | 5.8 | 8.4 | 13.9 | 17.9 | 27.0 | 34.8 | 41.6 | 46.1 | 48.1 |
+| Reward MSE | 138 | 135 | 130 | 91 | 90 | 77 | 57 | 61 | 36 | 37 | 31 |
+| Termination accuracy | 0.883 | 0.852 | 0.863 | 0.902 | 0.922 | 0.957 | 0.980 | 0.965 | 0.980 | 0.977 | 0.977 |
+
+Evaluation SE is 0.7–3.6 throughout. Compared with the earlier grid runs and with compact mode:
+
+| Run | Return at 900 / 1000 | Return at 2100 | Reward MSE at 1000 | Time per iteration |
+|---|---|---|---|---|
+| grid-base (gpt-mini, horizon 16, `action` outcomes, shared vocab) | −22.1 / −20.2 | stopped at 1000 | 140 | 17.6 s |
+| grid-vocab (the same with mode vocab) | −19.8 / — | stopped at 900 | 164 (at 900) | 19.6 s |
+| **grid2 micro-horizon8-grid** | **−16.1 / −13.2** | **86.5** | **91** | **12.4 s** (7.2 h total) |
+| compact micro-horizon8 (seed 3) | 231 / 228 | 255 | 3.2 | 1.25 s |
+
+Findings (single seed):
+- **The world model learns the grid, slowly.** Reward MSE fell from about 135 to 31, and termination accuracy rose from 0.85 to 0.98, mostly after iteration 1000. The policy's gains track that improvement, which fits the earlier diagnosis: the bottleneck is the world model learning to locate the player among 192 cells to predict outcomes. Token accuracy was 0.99 from the start, because it mostly reflects the static road layout.
+- **Return grows mainly through longer, safer episodes.** Episode length went from 8 to 48 steps between iterations 1000 and 2100, while completion rose only from 0.55 to 0.73. The policy first learned to stay on the road, and is only starting to follow instructions reliably.
+- **It is still far behind compact mode.** Grid at 2100 (86.5) is where compact `micro-horizon8` was between iterations 200 (69) and 300 (123), on the same 68,224 real steps. Grid imagined fewer steps (700k vs 1.01M), because more rollouts were predicted to end early. It took about 10× longer per iteration.
+- **Why this run learned and the old ones didn't is untested.** It differs from `grid-base` and `grid-vocab` in three ways: `action+obs` outcome features (the heads also see the mean over all 194 observation hidden states), gpt-micro instead of gpt-mini, and horizon 8 instead of 16. The old runs were also stopped at 900–1000, before this one's main climb, but at that point they were flat at −20 while this one was already improving (−13 at 1000). Single-seed runs spread widely, so a second seed would be needed before attributing the difference.
+- **It has not plateaued.** Its checkpoint and `train_state.pkl` allow an exact resume past 2100, at about 12–17 s per iteration on an H100.
 
 ## Single-seed analysis (seed 3)
 
@@ -293,7 +323,7 @@ Healthy compact world models converge to about the same accuracy regardless of p
 
 - **One seed per arm.** Runs with the same config spread widely: `compact-base` (autocast on) reaches 244 and `compact-baseline-exact` (autocast off) reaches 160. Changing the vocabulary or any layer shape changes every random draw, and GPU kernels are not deterministic. Falling short of `compact-base`, which sits at the top of that spread, is weak evidence. The `wm-actobs` early lead and the `wm-actobs-sg` collapse are the strongest signals in this sweep.
 - **Separate policies** use their own transformer at world-model size with no pretraining. A different size, learning rate, or an auxiliary loss could change the picture.
-- **Grid mode** was stopped early (iterations 1000 and 900), so it wasn't tested to 2100.
+- **Grid mode:** the original grid runs were stopped early (iterations 1000 and 900). The `grid2` run reached 2100 but is a single seed and had not plateaued.
 
 ## Suggested next steps
 
@@ -301,7 +331,7 @@ Healthy compact world models converge to about the same accuracy regardless of p
 
 1. **Done, then superseded: `compact-vocab-wm-actobs` became the default,** and after the second round `micro-horizon8` (the same with `model_type="gpt-micro"` and `imagination_horizon=8`) replaced it. Bare `DynaConfig()` equals the `micro-horizon8` config, `train.py` and `modal_train.py` default to gpt-micro, and all six sweep specs pin their own settings (52 recorded runs checked). Originally: Across 3 seeds `action+obs` is +26 to +31 at the end, with either vocabulary, and about twice as fast to 200 return; the stop-gradient control confirms its mechanism. Bare `DynaConfig()`, `train.py` and `modal_train.py` now give compact observations, the mode-specific vocabulary, `outcome_features="action+obs"`, gpt-mini, 64 context steps, world batch 64, 64 imagined rollouts and bf16 autocast. The sweep specs pin the old values (`vocab: shared`, `outcome_features: action`), so they still reproduce the recorded runs.
 2. **Vocabulary.** Either vocabulary is fine; they're computationally equivalent. Keeping the mode-specific one is tidier.
-3. **Grid mode.** It needs a way for the world model to locate the player, e.g. an auxiliary position target, or reading the head at the player's cell. Scaling iterations alone probably won't fix it.
+3. **Grid mode.** The `grid2` run shows that grid mode can learn with the `micro-horizon8` settings, but slowly: 86.5 at 2100 and still rising. Next: resume it past 2100 to find its plateau, run a second seed, and test which change made the difference (`action+obs`, gpt-micro or horizon 8). Helping the world model locate the player (an auxiliary position target, or reading the head at the player's cell) is still the most likely way to speed it up.
 
 ## Efficiency changes made for this sweep
 

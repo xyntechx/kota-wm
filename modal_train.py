@@ -35,7 +35,7 @@ image = (
     modal.Image.debian_slim(python_version="3.13")
     .uv_pip_install("torch==2.14.0", "numpy", "networkx", "termcolor", "einops")
     .env({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
-    .add_local_python_source("dyna", "train", "evaluate", "models", "envs")
+    .add_local_python_source("dyna", "train", "evaluate", "model_free", "dqn", "models", "envs")
 )
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App(APP_NAME, image=image)
@@ -314,6 +314,64 @@ def sweep(spec: str, gpu: str = DEFAULT_GPU):
     if results:
         _print_table([_summary_row(r) for r in results])
     print(f"Wrote {out}")
+
+
+@app.function(
+    gpu="L4",
+    cpu=4,
+    volumes={str(CHECKPOINT_DIR): volume},
+    timeout=MAX_TIMEOUT,
+    single_use_containers=True,
+)
+def train_model_free_remote(run: dict):
+    """One model-free run (compact obs, mode vocab); outputs under <name>/ in the volume.
+
+    `run`: name, seed, total_steps, eval_every, eval_episodes, algo ("ppo", model_free.py,
+    or "dqn", dqn.py) and config (ModelFreeConfig or DQNConfig fields).
+    """
+    import os
+
+    os.environ["KOTA_OBS"], os.environ["KOTA_VOCAB"], os.environ["KOTA_ORACLE"] = "compact", "mode", "0"
+    import dqn
+    import model_free
+
+    volume.reload()
+    algo = run.get("algo", "ppo")
+    module, config_class = {"ppo": (model_free, model_free.ModelFreeConfig), "dqn": (dqn, dqn.DQNConfig)}[algo]
+    config = config_class(**run.get("config", {}))
+    results = module.train(
+        config,
+        run["total_steps"],
+        CHECKPOINT_DIR / run["name"],
+        seed=run.get("seed", 3),
+        eval_episodes=run.get("eval_episodes", 200),
+        eval_every=run.get("eval_every", 500_000),
+        on_eval=volume.commit,
+    )
+    volume.commit()
+    evals = results["evals"]
+    return dict(name=run["name"], best_return=results["best_return"], best_steps=results["best_steps"],
+                final=evals[-1] if evals else None)
+
+
+@app.local_entrypoint()
+def model_free_sweep(spec: str):
+    """Spawn every run of a model-free spec in parallel: {"name", "defaults", "runs": [...]}."""
+    sweep_spec = json.loads(Path(spec).read_text())
+    defaults = sweep_spec.get("defaults", {})
+    runs = [
+        {**defaults, **r, "name": f"{sweep_spec['name']}/{r['name']}",
+         "config": {**defaults.get("config", {}), **r.get("config", {})}}
+        for r in sweep_spec["runs"]
+    ]
+    calls = [(run["name"], train_model_free_remote.spawn(run)) for run in runs]
+    for name, call in calls:
+        print(name, call.object_id, flush=True)
+    for name, call in calls:
+        try:
+            print("Finished", json.dumps(call.get()), flush=True)
+        except Exception as error:
+            print(f"FAILED {name}: {error!r}", flush=True)
 
 
 @app.function(gpu=DEFAULT_GPU, timeout=1800, single_use_containers=True)
