@@ -9,10 +9,20 @@ import torch
 
 
 class Cache:
-    def __init__(self, num_samples: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device, dtype: torch.dtype = None) -> None:
+    def __init__(
+        self,
+        num_samples: int,
+        num_heads: int,
+        max_tokens: int,
+        embed_dim: int,
+        device: torch.device,
+        dtype: torch.dtype = None,
+    ) -> None:
         assert embed_dim % num_heads == 0
         self._n, self._cache, self._size = num_samples, None, None
-        self._reset = lambda n: torch.empty(n, num_heads, max_tokens, embed_dim // num_heads, device=device, dtype=dtype)  # (B, nh, T, hs)
+        self._reset = lambda n: torch.empty(
+            n, num_heads, max_tokens, embed_dim // num_heads, device=device, dtype=dtype
+        )  # (B, nh, T, hs)
         self.reset()
 
     @property
@@ -30,17 +40,29 @@ class Cache:
         self._n = self._cache.shape[0]
 
     def get(self) -> torch.Tensor:
-        return self._cache[:, :, :self._size, :]
+        return self._cache[:, :, : self._size, :]
 
     def update(self, x: torch.Tensor) -> None:
-        assert (x.ndim == self._cache.ndim) and all([x.size(i) == self._cache.size(i) for i in (0, 1, 3)])
+        assert (x.ndim == self._cache.ndim) and all(
+            [x.size(i) == self._cache.size(i) for i in (0, 1, 3)]
+        )
         assert self._size + x.size(2) <= self._cache.shape[2]
-        self._cache = AssignWithoutInplaceCheck.apply(self._cache, x, 2, self._size, self._size + x.size(2))
+        self._cache = AssignWithoutInplaceCheck.apply(
+            self._cache, x, 2, self._size, self._size + x.size(2)
+        )
         self._size += x.size(2)
 
 
 class KVCache:
-    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, device: torch.device, dtype: torch.dtype = None) -> None:
+    def __init__(
+        self,
+        n: int,
+        num_heads: int,
+        max_tokens: int,
+        embed_dim: int,
+        device: torch.device,
+        dtype: torch.dtype = None,
+    ) -> None:
         self._k_cache = Cache(n, num_heads, max_tokens, embed_dim, device, dtype)
         self._v_cache = Cache(n, num_heads, max_tokens, embed_dim, device, dtype)
 
@@ -65,8 +87,22 @@ class KVCache:
 
 
 class KeysValues:
-    def __init__(self, n: int, num_heads: int, max_tokens: int, embed_dim: int, num_layers: int, device: torch.device, dtype: torch.dtype = None) -> None:
-        self._keys_values = tuple([KVCache(n, num_heads, max_tokens, embed_dim, device, dtype) for _ in range(num_layers)])
+    def __init__(
+        self,
+        n: int,
+        num_heads: int,
+        max_tokens: int,
+        embed_dim: int,
+        num_layers: int,
+        device: torch.device,
+        dtype: torch.dtype = None,
+    ) -> None:
+        self._keys_values = tuple(
+            [
+                KVCache(n, num_heads, max_tokens, embed_dim, device, dtype)
+                for _ in range(num_layers)
+            ]
+        )
 
     def __getitem__(self, key: int) -> KVCache:
         return self._keys_values[key]
@@ -95,10 +131,18 @@ class AssignWithoutInplaceCheck(torch.autograd.Function):
 
     @staticmethod
     def get_slice(dim: int, start: int, stop: int) -> Tuple[slice]:
-        return tuple([slice(None), ] * dim + [slice(start, stop)])
+        return tuple(
+            [
+                slice(None),
+            ]
+            * dim
+            + [slice(start, stop)]
+        )
 
     @staticmethod
-    def forward(ctx, input: torch.Tensor, value: torch.Tensor, dim: int, start: int, stop: int) -> torch.Tensor:
+    def forward(
+        ctx, input: torch.Tensor, value: torch.Tensor, dim: int, start: int, stop: int
+    ) -> torch.Tensor:
         ctx.dim = dim
         ctx.start = start
         ctx.stop = stop
@@ -107,4 +151,10 @@ class AssignWithoutInplaceCheck(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor) -> Tuple[torch.Tensor]:
-        return grad_out, grad_out[AssignWithoutInplaceCheck.get_slice(ctx.dim, ctx.start, ctx.stop)], None, None, None
+        return (
+            grad_out,
+            grad_out[AssignWithoutInplaceCheck.get_slice(ctx.dim, ctx.start, ctx.stop)],
+            None,
+            None,
+            None,
+        )

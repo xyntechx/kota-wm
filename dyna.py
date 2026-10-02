@@ -124,7 +124,9 @@ ROW_TOKEN_IDS = tuple(VOCAB[f"row {r}"] for r in range(GRID_ROWS) if _COMPACT_TO
 COL_TOKEN_IDS = tuple(VOCAB[f"col {c}"] for c in range(GRID_COLS) if _COMPACT_TOKENS)
 STOP_TOKEN_IDS = tuple(VOCAB[t] for t in ("stop A", "stop S") if _COMPACT_TOKENS)
 CELL_TOKEN_IDS = tuple(VOCAB[t] for t in ("0", "1", "A", "S", "P") if _GRID_TOKENS)
-PROGRESS_TOKEN_IDS = tuple(VOCAB[f"progress {k}"] for k in range(MAX_TASK_STEPS + 1) if ORACLE)
+PROGRESS_TOKEN_IDS = tuple(
+    VOCAB[f"progress {k}"] for k in range(MAX_TASK_STEPS + 1) if ORACLE
+)
 
 ACTION_NAMES = ("W", "A", "S", "D", "")
 ACTION_TOKEN_IDS = tuple(VOCAB[t] for t in ("W_act", "A_act", "S_act", "D_act", "NOOP"))
@@ -325,9 +327,7 @@ class CachedContext:
             device=self.device,
         )
         h = torch.cat(
-            [
-                self._forward(chunk) for chunk in idx.split(PREFILL_CHUNK, dim=1)
-            ],
+            [self._forward(chunk) for chunk in idx.split(PREFILL_CHUNK, dim=1)],
             dim=1,
         )
         self.hidden = h[:, -1, :]
@@ -394,8 +394,11 @@ def policy_features(session, mode="both"):
     if mode == "current":
         rows = [row[-OUT_LEN:] for row in session.tokens]
         idx = torch.tensor(rows, dtype=torch.long, device=session.device)
-        with torch.no_grad(), torch.autocast(
-            session.device.type, torch.bfloat16, enabled=session.autocast
+        with (
+            torch.no_grad(),
+            torch.autocast(
+                session.device.type, torch.bfloat16, enabled=session.autocast
+            ),
         ):
             h = session.world_model(idx).float()
         return torch.cat((h[:, -1], h.mean(dim=1)), dim=-1)
@@ -403,7 +406,9 @@ def policy_features(session, mode="both"):
         rows = [row[-OUT_LEN:] for row in session.tokens]
         return torch.tensor(rows, dtype=torch.long, device=session.device)
     if mode == "seq":
-        rows = [[VOCAB["<PAD>"]] * p + row for p, row in zip(session.pad, session.tokens)]
+        rows = [
+            [VOCAB["<PAD>"]] * p + row for p, row in zip(session.pad, session.tokens)
+        ]
         return torch.tensor(rows, dtype=torch.long, device=session.device)
     if mode == "last":
         return session.hidden
@@ -658,7 +663,9 @@ class CityDataset(Dataset):
         terminated[-1] = int(episode.terminated and end == n == len(episode))
         if self.gamma is None:
             return x, y, positions, rewards, terminated
-        returns = torch.tensor(self.returns[id(episode)][start:end], dtype=torch.float32)
+        returns = torch.tensor(
+            self.returns[id(episode)][start:end], dtype=torch.float32
+        )
         return x, y, positions, rewards, terminated, returns
 
 
@@ -672,7 +679,9 @@ def collate_world_model(batch):
         pad_sequence(columns[4], batch_first=True),
     ]
     if len(columns) > 5:  # returns
-        out.append(pad_sequence(columns[5], batch_first=True, padding_value=float("nan")))
+        out.append(
+            pad_sequence(columns[5], batch_first=True, padding_value=float("nan"))
+        )
     return tuple(out)
 
 
@@ -743,7 +752,9 @@ def train_world_model(
             except StopIteration:
                 batches = iter(loader)
                 batch = next(batches)
-            x, y, positions, rewards, terminated, *returns = [v.to(device) for v in batch]
+            x, y, positions, rewards, terminated, *returns = [
+                v.to(device) for v in batch
+            ]
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(
                 device.type,
@@ -1008,9 +1019,6 @@ def train_policy(
     return metrics
 
 
-# Defaults are the abl2 micro-horizon8 configuration: compact-vocab-wm-actobs
-# (KOTA_OBS=compact, KOTA_VOCAB=mode) with gpt-micro and imagination horizon 8;
-# see sweeps/results/abl2100_report.md.
 @dataclass
 class DynaConfig:
     context_steps: int = 64

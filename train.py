@@ -1,7 +1,8 @@
 """Train the Dyna world model and policy (defaults: micro-horizon8, i.e. compact-vocab-wm-actobs with gpt-micro and horizon 8).
 
-    python train.py --until 2100 --out-dir runs/my-run
+python train.py --until 2100 --out-dir runs/my-run
 """
+
 import argparse
 from dataclasses import asdict, fields
 import json
@@ -25,8 +26,8 @@ from dyna import (
 )
 from evaluate import evaluate
 
-CHECKPOINT_NAME = "dyna_checkpoint.pt"
-BEST_CHECKPOINT_NAME = "dyna_checkpoint_best.pt"
+CHECKPOINT_NAME = "kota_checkpoint.pt"
+BEST_CHECKPOINT_NAME = "kota_checkpoint_best.pt"
 METRICS_NAME = "metrics.json"
 # Everything besides the weights that a resume needs to continue exactly where the
 # run stopped: replay, the episode in progress, RNG states and metrics so far.
@@ -114,7 +115,9 @@ def load_checkpoint(path, world_model, actor_critic, trainer):
             f"Checkpoint uses KOTA_OBS={checkpoint['obs_mode']}, not {OBS_MODE}"
         )
     if checkpoint.get("oracle", False) != ORACLE:
-        raise ValueError(f"Checkpoint uses KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}")
+        raise ValueError(
+            f"Checkpoint uses KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}"
+        )
     if checkpoint.get("vocab", "shared") != VOCAB_MODE:
         raise ValueError(
             f"Checkpoint uses KOTA_VOCAB={checkpoint.get('vocab', 'shared')}, not {VOCAB_MODE}"
@@ -159,13 +162,16 @@ def train(
     eval_episodes=50,
     eval_transitions=256,
     eval_every=10,
+    should_stop=None,
 ):
     """Train for `iterations` more iterations, or until iteration `until`.
 
     Resuming from a run's last checkpoint also restores its train_state.pkl when
     present, so the run continues exactly (same replay, RNG and metrics). With
     `time_limit` (seconds) the run checkpoints and returns early with
-    results["stopped_at"] set once that much time has passed.
+    results["stopped_at"] set once that much time has passed. `should_stop(iteration)`
+    is called after every iteration; when it returns True the run checkpoints and
+    returns with results["stopped_early"] set.
     """
     if (iterations is None) == (until is None):
         raise ValueError("Pass exactly one of iterations and until")
@@ -201,11 +207,15 @@ def train(
         state_path = Path(resume).with_name(STATE_NAME)
         if Path(resume).name == CHECKPOINT_NAME and state_path.is_file():
             restored = load_state(state_path, trainer)
-            print(f"Restored replay ({len(trainer.replay)} steps), RNG and metrics from {state_path}")
+            print(
+                f"Restored replay ({len(trainer.replay)} steps), RNG and metrics from {state_path}"
+            )
     if until is not None:
         iterations = until - trainer.iteration
     if iterations < 1:
-        raise ValueError(f"Nothing to train: iteration {trainer.iteration}, {iterations} to go")
+        raise ValueError(
+            f"Nothing to train: iteration {trainer.iteration}, {iterations} to go"
+        )
 
     def checkpoint():
         save_checkpoint(
@@ -259,7 +269,16 @@ def train(
     )
     if restored is not None:
         results.update(
-            {k: restored[k] for k in ("iterations", "evals", "eval", "best_return", "best_iteration")}
+            {
+                k: restored[k]
+                for k in (
+                    "iterations",
+                    "evals",
+                    "eval",
+                    "best_return",
+                    "best_iteration",
+                )
+            }
         )
         results.pop("stopped_at", None)
         metrics = results["iterations"]
@@ -284,6 +303,10 @@ def train(
             results["stopped_at"] = trainer.iteration
             print(f"Time limit reached at iteration {trainer.iteration}")
             break
+        if should_stop is not None and not last and should_stop(trainer.iteration):
+            results["stopped_early"] = trainer.iteration
+            print(f"Stopping early at iteration {trainer.iteration}")
+            break
         if trainer.iteration % checkpoint_every == 0 and not last:
             checkpoint()
     checkpoint()
@@ -294,10 +317,15 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument(
-        "--until", type=int, default=None, help="train up to this iteration (overrides --iterations)"
+        "--until",
+        type=int,
+        default=None,
+        help="train up to this iteration (overrides --iterations)",
     )
     parser.add_argument("--out-dir", default=".")
-    parser.add_argument("--model-type", default="gpt-micro", choices=sorted(MODEL_PRESETS))
+    parser.add_argument(
+        "--model-type", default="gpt-micro", choices=sorted(MODEL_PRESETS)
+    )
     parser.add_argument("--agent-hidden-dim", type=int, default=1024)
     parser.add_argument("--wm-hidden-dim", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=3407)

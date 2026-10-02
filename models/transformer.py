@@ -40,15 +40,34 @@ class Transformer(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.num_layers)])
         self.ln_f = nn.LayerNorm(config.embed_dim)
 
-    def generate_empty_keys_values(self, n: int, max_tokens: int, dtype: Optional[torch.dtype] = None) -> KeysValues:
-        device = self.ln_f.weight.device  # Assumption that all submodules are on the same device
-        return KeysValues(n, self.config.num_heads, max_tokens, self.config.embed_dim, self.config.num_layers, device, dtype)
+    def generate_empty_keys_values(
+        self, n: int, max_tokens: int, dtype: Optional[torch.dtype] = None
+    ) -> KeysValues:
+        device = (
+            self.ln_f.weight.device
+        )  # Assumption that all submodules are on the same device
+        return KeysValues(
+            n,
+            self.config.num_heads,
+            max_tokens,
+            self.config.embed_dim,
+            self.config.num_layers,
+            device,
+            dtype,
+        )
 
-    def forward(self, sequences: torch.Tensor, past_keys_values: Optional[KeysValues] = None, key_valid: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        sequences: torch.Tensor,
+        past_keys_values: Optional[KeysValues] = None,
+        key_valid: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         assert past_keys_values is None or len(past_keys_values) == len(self.blocks)
         x = self.drop(sequences)
         for i, block in enumerate(self.blocks):
-            x = block(x, None if past_keys_values is None else past_keys_values[i], key_valid)
+            x = block(
+                x, None if past_keys_values is None else past_keys_values[i], key_valid
+            )
 
         x = self.ln_f(x)
         return x
@@ -67,7 +86,12 @@ class Block(nn.Module):
             nn.Dropout(config.resid_pdrop),
         )
 
-    def forward(self, x: torch.Tensor, past_keys_values: Optional[KeysValues] = None, key_valid: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        past_keys_values: Optional[KeysValues] = None,
+        key_valid: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         x_attn = self.attn(self.ln1(x), past_keys_values, key_valid)
         x = x + x_attn
         x = x + self.mlp(self.ln2(x))
@@ -76,14 +100,14 @@ class Block(nn.Module):
 
 class SelfAttention(nn.Module):
     # Largest (B, heads, queries, keys) score tensor computed without a fused kernel.
-    SMALL_SCORES = 2 ** 26
+    SMALL_SCORES = 2**26
 
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
         assert config.embed_dim % config.num_heads == 0
-        assert config.attention in ('causal', 'block_causal')
+        assert config.attention in ("causal", "block_causal")
         self.num_heads = config.num_heads
-        self.causal = config.attention == 'causal'
+        self.causal = config.attention == "causal"
         self.key = nn.Linear(config.embed_dim, config.embed_dim)
         self.query = nn.Linear(config.embed_dim, config.embed_dim)
         self.value = nn.Linear(config.embed_dim, config.embed_dim)
@@ -92,13 +116,31 @@ class SelfAttention(nn.Module):
         self.proj = nn.Linear(config.embed_dim, config.embed_dim)
 
         causal_mask = torch.tril(torch.ones(config.max_tokens, config.max_tokens))
-        block_causal_mask = torch.max(causal_mask, torch.block_diag(*[torch.ones(config.tokens_per_block, config.tokens_per_block) for _ in range(config.max_blocks)]))
+        block_causal_mask = torch.max(
+            causal_mask,
+            torch.block_diag(
+                *[
+                    torch.ones(config.tokens_per_block, config.tokens_per_block)
+                    for _ in range(config.max_blocks)
+                ]
+            ),
+        )
         # Not persistent: at a few thousand tokens it is tens of MB per layer of pure structure.
-        self.register_buffer('mask', (causal_mask if self.causal else block_causal_mask).bool(), persistent=False)
+        self.register_buffer(
+            "mask",
+            (causal_mask if self.causal else block_causal_mask).bool(),
+            persistent=False,
+        )
 
-    def forward(self, x: torch.Tensor, kv_cache: Optional[KVCache] = None, key_valid: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache: Optional[KVCache] = None,
+        key_valid: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """key_valid: optional (B, L + T) bool, False at left padding. Real tokens never
-        attend to padding; a padding token attends only to itself (no empty softmax rows)."""
+        attend to padding; a padding token attends only to itself (no empty softmax rows).
+        """
         B, T, C = x.size()
         if kv_cache is not None:
             b, nh, L, c = kv_cache.shape
@@ -106,9 +148,19 @@ class SelfAttention(nn.Module):
         else:
             L = 0
 
-        q = self.query(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)   # (B, nh, T, hs)
-        k = self.key(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)     # (B, nh, T, hs)
-        v = self.value(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)   # (B, nh, T, hs)
+        q = (
+            self.query(x)
+            .view(B, T, self.num_heads, C // self.num_heads)
+            .transpose(1, 2)
+        )  # (B, nh, T, hs)
+        k = (
+            self.key(x).view(B, T, self.num_heads, C // self.num_heads).transpose(1, 2)
+        )  # (B, nh, T, hs)
+        v = (
+            self.value(x)
+            .view(B, T, self.num_heads, C // self.num_heads)
+            .transpose(1, 2)
+        )  # (B, nh, T, hs)
 
         if kv_cache is not None:
             kv_cache.update(k, v)
@@ -117,21 +169,32 @@ class SelfAttention(nn.Module):
         # Fused attention never materializes the (B, nh, T, T) scores, which is what
         # lets long contexts fit in memory. Same masking as softmax(qk^T / sqrt(hs)).
         dropout_p = self.attn_drop.p if self.training else 0.0
-        mask = self.mask[L:L + T, :L + T]
+        mask = self.mask[L : L + T, : L + T]
         if key_valid is not None:
-            itself = torch.arange(L + T, device=x.device) == torch.arange(L, L + T, device=x.device)[:, None]
+            itself = (
+                torch.arange(L + T, device=x.device)
+                == torch.arange(L, L + T, device=x.device)[:, None]
+            )
             mask = mask & (key_valid[:, None, None, :] | itself)  # (B, 1, T, L + T)
         if self.causal and L == 0 and key_valid is None:
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, dropout_p=dropout_p)
-        elif L > 0 and dropout_p == 0.0 and B * self.num_heads * T * (L + T) <= self.SMALL_SCORES:
+            y = F.scaled_dot_product_attention(
+                q, k, v, is_causal=True, dropout_p=dropout_p
+            )
+        elif (
+            L > 0
+            and dropout_p == 0.0
+            and B * self.num_heads * T * (L + T) <= self.SMALL_SCORES
+        ):
             # Few queries against a long cache (decoding): the fused kernels tile queries
             # in blocks of 64 and are ~10x slower here than one pass over the keys.
             att = (q @ k.transpose(-2, -1)) * (1.0 / (k.size(-1) ** 0.5))
             att = att.masked_fill(~mask, float("-inf")).softmax(dim=-1)
             y = att @ v
         else:
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout_p)
-        y = rearrange(y, 'b h t e -> b t (h e)')
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, dropout_p=dropout_p
+            )
+        y = rearrange(y, "b h t e -> b t (h e)")
 
         y = self.resid_drop(self.proj(y))
 

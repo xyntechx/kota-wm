@@ -1,7 +1,8 @@
 """Evaluate a checkpoint's policy in the real environment and its world model on real transitions.
 
-    KOTA_OBS=compact KOTA_VOCAB=mode python evaluate.py <checkpoint.pt> --episodes 200
+KOTA_OBS=compact KOTA_VOCAB=mode python evaluate.py <checkpoint.pt> --episodes 200
 """
+
 import argparse
 import json
 
@@ -39,7 +40,9 @@ def load_models(path, device="cpu"):
             f"Checkpoint was trained with KOTA_OBS={checkpoint['obs_mode']}, not {OBS_MODE}"
         )
     if checkpoint.get("oracle", False) != ORACLE:
-        raise ValueError(f"Checkpoint was trained with KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}")
+        raise ValueError(
+            f"Checkpoint was trained with KOTA_ORACLE={int(checkpoint.get('oracle', False))}, not {int(ORACLE)}"
+        )
     if checkpoint.get("vocab", "shared") != VOCAB_MODE:
         raise ValueError(
             f"Checkpoint was trained with KOTA_VOCAB={checkpoint.get('vocab', 'shared')}, not {VOCAB_MODE}"

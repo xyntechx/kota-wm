@@ -3,20 +3,12 @@
     modal run modal_train.py::main --iterations 500
     modal run --detach modal_train.py::main --iterations 2000 --gpu H100   # keeps running if you close the terminal
     modal run modal_train.py::main --iterations 500 --resume 20260920-1430  # continue an earlier run
-    modal run modal_train.py::main --iterations 500 --resume 20260920-1430/dyna_checkpoint_best.pt
+    modal run modal_train.py::main --iterations 500 --resume 20260920-1430/kota_checkpoint_best.pt
 
 DynaConfig fields are overridden with JSON, e.g.
     --config '{"warmup_steps": 1024, "world_batch_size": 4}'
 Observation encoding: --obs-mode compact (row/col/light, default) or grid (16x12 cells);
 vocabulary: "mode" (only that encoding's tokens, default) or "shared".
-
-Sweeps run several configurations in parallel from a JSON spec (format in `sweep`):
-    modal run --detach modal_train.py::sweep --spec sweeps/world_model.json
-
-Checkpoints live under <run-name>/ in the volume; pass --download to copy the
-final dyna_checkpoint.pt to checkpoints/<run-name>/ when the run finishes, or
-fetch any run later with:
-    modal volume get kota-wm-checkpoints <run-name>/dyna_checkpoint.pt
 """
 
 import json
@@ -35,7 +27,9 @@ image = (
     modal.Image.debian_slim(python_version="3.13")
     .uv_pip_install("torch==2.14.0", "numpy", "networkx", "termcolor", "einops")
     .env({"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
-    .add_local_python_source("dyna", "train", "evaluate", "model_free", "dqn", "models", "envs")
+    .add_local_python_source(
+        "dyna", "train", "evaluate", "model_free", "models", "envs"
+    )
 )
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 app = modal.App(APP_NAME, image=image)
@@ -84,9 +78,13 @@ def train_remote(run: dict):
     import os
     import shutil
 
-    os.environ["KOTA_OBS"] = run.get("obs_mode", RUN_DEFAULTS["obs_mode"])  # before importing dyna
+    os.environ["KOTA_OBS"] = run.get(
+        "obs_mode", RUN_DEFAULTS["obs_mode"]
+    )  # before importing dyna
     os.environ["KOTA_VOCAB"] = run.get("vocab", RUN_DEFAULTS["vocab"])
-    os.environ["KOTA_ORACLE"] = "1" if run.get("oracle", RUN_DEFAULTS["oracle"]) else "0"
+    os.environ["KOTA_ORACLE"] = (
+        "1" if run.get("oracle", RUN_DEFAULTS["oracle"]) else "0"
+    )
     import train
     import dyna
     from dyna import DynaConfig
@@ -108,13 +106,14 @@ def train_remote(run: dict):
     out_dir = CHECKPOINT_DIR / run["name"]
     resume_path = None
     if run["resume"] is not None:
-        # A run name (its last checkpoint) or a file inside the volume, e.g.
-        # "<run>/dyna_checkpoint_best.pt".
         resume_path = CHECKPOINT_DIR / run["resume"]
         if not run["resume"].endswith(".pt"):
             resume_path = resume_path / train.CHECKPOINT_NAME
         if not resume_path.is_file():
-            raise FileNotFoundError(f"No checkpoint at {resume_path} in volume {VOLUME_NAME}")
+            raise FileNotFoundError(
+                f"No checkpoint at {resume_path} in volume {VOLUME_NAME}"
+            )
+
     def on_checkpoint(path, iteration):
         every = run["snapshot_every"]
         if every and iteration % every == 0:
@@ -130,8 +129,10 @@ def train_remote(run: dict):
     until = run["until"]
     if until is None and resume_path is None:
         until = run["iterations"]
-    print(f"Run {run['name']}: {run['iterations'] if until is None else f'until iteration {until}'} "
-          f"of {run['model_type']}; config {config}")
+    print(
+        f"Run {run['name']}: {run['iterations'] if until is None else f'until iteration {until}'} "
+        f"of {run['model_type']}; config {config}"
+    )
     results = train.train(
         config,
         iterations=None if until is not None else run["iterations"],
@@ -153,10 +154,16 @@ def train_remote(run: dict):
     if "stopped_at" in results:
         # Resume from this run's last checkpoint (and train_state.pkl) in a new call.
         target = results["until"]
-        fn = train_remote if run["gpu"] is None else train_remote.with_options(gpu=run["gpu"])
+        fn = (
+            train_remote
+            if run["gpu"] is None
+            else train_remote.with_options(gpu=run["gpu"])
+        )
         call = fn.spawn({**run, "resume": run["name"], "until": target})
         results["continued_in"] = call.object_id
-        print(f"Stopped at iteration {results['stopped_at']}; continuing to {target} in call {call.object_id}")
+        print(
+            f"Stopped at iteration {results['stopped_at']}; continuing to {target} in call {call.object_id}"
+        )
     return results
 
 
@@ -167,10 +174,7 @@ def train_remote(run: dict):
     single_use_containers=True,
 )
 def evaluate_remote(snapshot: str, episodes: int = 200, seed: int = 0):
-    """Score one checkpoint in the real environment; writes <run>/evals/<name>.json.
-
-    `snapshot` is relative to the volume, e.g. "abl2100/compact-base/snapshots/iter_0100.pt".
-    """
+    """Score one checkpoint in the real environment; writes <run>/evals/<name>.json."""
     import os
 
     import torch
@@ -185,19 +189,26 @@ def evaluate_remote(snapshot: str, episodes: int = 200, seed: int = 0):
 
     world_model, policy, config = load_models(path, device="cuda")
     result = evaluate(world_model, policy, config, episodes, 256, seed)
-    result.update(iteration=checkpoint["iteration"], snapshot=snapshot, episodes=episodes, seed=seed)
+    result.update(
+        iteration=checkpoint["iteration"],
+        snapshot=snapshot,
+        episodes=episodes,
+        seed=seed,
+    )
     out = path.parent.parent / "evals" / (path.stem + ".json")
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(result, indent=1))
     volume.commit()
-    print(f"{snapshot}: return {result['policy']['mean_return']:.1f} "
-          f"completion {result['policy']['completion_rate']:.3f}")
+    print(
+        f"{snapshot}: return {result['policy']['mean_return']:.1f} "
+        f"completion {result['policy']['completion_rate']:.3f}"
+    )
     return result
 
 
 def _download(run_name):
-    remote = f"{run_name}/dyna_checkpoint.pt"
-    local = Path(__file__).parent / "checkpoints" / run_name / "dyna_checkpoint.pt"
+    remote = f"{run_name}/kota_checkpoint.pt"
+    local = Path(__file__).parent / "checkpoints" / run_name / "kota_checkpoint.pt"
     local.parent.mkdir(parents=True, exist_ok=True)
     with local.open("wb") as f:
         for chunk in volume.read_file(remote):
@@ -213,7 +224,9 @@ def _summary_row(results):
         name=results["name"],
         iterations=len(iterations),
         best_iteration=results.get("best_iteration"),
-        sec_per_iter=iterations[-1]["elapsed"] / len(iterations) if iterations else None,
+        sec_per_iter=(
+            iterations[-1]["elapsed"] / len(iterations) if iterations else None
+        ),
         mean_return=policy.get("mean_return"),
         sem_return=policy.get("sem_return"),
         best_return=results.get("best_return"),
@@ -229,7 +242,12 @@ def _summary_row(results):
 
 
 def _print_table(rows):
-    rows = sorted(rows, key=lambda r: -(r["mean_return"] if r["mean_return"] is not None else float("-inf")))
+    rows = sorted(
+        rows,
+        key=lambda r: -(
+            r["mean_return"] if r["mean_return"] is not None else float("-inf")
+        ),
+    )
     columns = list(rows[0])
     fmt = lambda v: f"{v:.3f}" if isinstance(v, float) else str(v)
     widths = [max(len(c), *(len(fmt(r[c])) for r in rows)) for c in columns]
@@ -271,49 +289,17 @@ def main(
         gpu=gpu,
     )
     fn = train_remote if gpu == DEFAULT_GPU else train_remote.with_options(gpu=gpu)
-    print(f"Starting run {run['name']!r} on {gpu}; checkpoints -> {VOLUME_NAME}:/{run['name']}/")
+    print(
+        f"Starting run {run['name']!r} on {gpu}; checkpoints -> {VOLUME_NAME}:/{run['name']}/"
+    )
     results = fn.remote(run)
     _print_table([_summary_row(results)])
     if download:
         _download(run["name"])
     else:
-        print(f"Fetch it with: modal volume get {VOLUME_NAME} {run['name']}/dyna_checkpoint.pt")
-
-
-@app.local_entrypoint()
-def sweep(spec: str, gpu: str = DEFAULT_GPU):
-    """Launch every run in a JSON spec in parallel; print a table sorted by real return.
-
-    Spec: {"name": "...", "defaults": {<run settings>}, "runs": [{"name": "...", ...}, ...]}
-    Run names are prefixed with the sweep name in the volume. Results are also
-    written to sweeps/results/<sweep-name>.json.
-    """
-    spec_path = Path(spec)
-    sweep_spec = json.loads(spec_path.read_text())
-    defaults = sweep_spec.get("defaults", {})
-    runs = [
-        {"gpu": gpu, **defaults, **r, "name": f"{sweep_spec['name']}/{r['name']}",
-         "config": {**defaults.get("config", {}), **r.get("config", {})}}
-        for r in sweep_spec["runs"]
-    ]
-    print(f"Sweep {sweep_spec['name']}: {len(runs)} runs")
-    calls = [
-        (run["name"], train_remote.with_options(gpu=run["gpu"]).spawn(run)) for run in runs
-    ]
-    results, failures = [], {}
-    for name, call in calls:
-        try:
-            results.append(call.get())
-            print(f"Finished {name}")
-        except Exception as error:  # keep the rest of the sweep's results
-            failures[name] = repr(error)
-            print(f"FAILED {name}: {error!r}")
-    out = spec_path.parent / "results" / f"{sweep_spec['name']}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(dict(spec=sweep_spec, results=results, failures=failures), indent=1))
-    if results:
-        _print_table([_summary_row(r) for r in results])
-    print(f"Wrote {out}")
+        print(
+            f"Fetch it with: modal volume get {VOLUME_NAME} {run['name']}/kota_checkpoint.pt"
+        )
 
 
 @app.function(
@@ -326,20 +312,23 @@ def sweep(spec: str, gpu: str = DEFAULT_GPU):
 def train_model_free_remote(run: dict):
     """One model-free run (compact obs, mode vocab); outputs under <name>/ in the volume.
 
-    `run`: name, seed, total_steps, eval_every, eval_episodes, algo ("ppo", model_free.py,
-    or "dqn", dqn.py) and config (ModelFreeConfig or DQNConfig fields).
+    `run`: name, seed, total_steps, eval_every, eval_episodes, algo ("ppo" or "dqn",
+    model_free.ALGOS) and config (ModelFreeConfig or DQNConfig fields).
     """
     import os
 
-    os.environ["KOTA_OBS"], os.environ["KOTA_VOCAB"], os.environ["KOTA_ORACLE"] = "compact", "mode", "0"
-    import dqn
+    os.environ["KOTA_OBS"], os.environ["KOTA_VOCAB"], os.environ["KOTA_ORACLE"] = (
+        "compact",
+        "mode",
+        "0",
+    )
     import model_free
 
     volume.reload()
     algo = run.get("algo", "ppo")
-    module, config_class = {"ppo": (model_free, model_free.ModelFreeConfig), "dqn": (dqn, dqn.DQNConfig)}[algo]
+    config_class, train, *_ = model_free.ALGOS[algo]
     config = config_class(**run.get("config", {}))
-    results = module.train(
+    results = train(
         config,
         run["total_steps"],
         CHECKPOINT_DIR / run["name"],
@@ -350,84 +339,9 @@ def train_model_free_remote(run: dict):
     )
     volume.commit()
     evals = results["evals"]
-    return dict(name=run["name"], best_return=results["best_return"], best_steps=results["best_steps"],
-                final=evals[-1] if evals else None)
-
-
-@app.local_entrypoint()
-def model_free_sweep(spec: str):
-    """Spawn every run of a model-free spec in parallel: {"name", "defaults", "runs": [...]}."""
-    sweep_spec = json.loads(Path(spec).read_text())
-    defaults = sweep_spec.get("defaults", {})
-    runs = [
-        {**defaults, **r, "name": f"{sweep_spec['name']}/{r['name']}",
-         "config": {**defaults.get("config", {}), **r.get("config", {})}}
-        for r in sweep_spec["runs"]
-    ]
-    calls = [(run["name"], train_model_free_remote.spawn(run)) for run in runs]
-    for name, call in calls:
-        print(name, call.object_id, flush=True)
-    for name, call in calls:
-        try:
-            print("Finished", json.dumps(call.get()), flush=True)
-        except Exception as error:
-            print(f"FAILED {name}: {error!r}", flush=True)
-
-
-@app.function(gpu=DEFAULT_GPU, timeout=1800, single_use_containers=True)
-def probe_memory_remote(model_type: str, context_steps: int, batch_sizes: list, autocast: bool, obs_mode: str):
-    """Peak memory of one world-model update per batch size, until the first OOM."""
-    import os
-
-    os.environ["KOTA_OBS"] = obs_mode
-    os.environ["KOTA_VOCAB"] = RUN_DEFAULTS["vocab"]
-    import torch
-    from dyna import (
-        OUT_LEN, STEP_LEN, DynaConfig, Replay, build_models, observe, random_city,
-        train_world_model,
+    return dict(
+        name=run["name"],
+        best_return=results["best_return"],
+        best_steps=results["best_steps"],
+        final=evals[-1] if evals else None,
     )
-
-    config = DynaConfig(context_steps=context_steps)
-    world_model, _ = build_models(config, device="cuda", model_type=model_type)
-    optimizer = torch.optim.AdamW(world_model.parameters(), lr=config.world_lr)
-    # Worst case: batches of full windows. In one long episode nearly every
-    # window is full, and one full window pads a whole batch to full length.
-    obs = tuple(observe(random_city()))
-    replay = Replay()
-    replay.start(obs)
-    for _ in range(100 * context_steps):
-        replay.add(0, 1.0, False, obs)
-    rows = []
-    for batch_size in sorted(batch_sizes):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        try:
-            train_world_model(
-                world_model, optimizer, replay, context_steps, num_updates=2,
-                batch_size=batch_size, autocast=autocast,
-            )
-            peak = torch.cuda.max_memory_allocated() / 2**30
-            rows.append(dict(batch_size=batch_size, peak_gib=round(peak, 2), ok=True))
-            print(rows[-1])
-        except torch.OutOfMemoryError:
-            rows.append(dict(batch_size=batch_size, peak_gib=None, ok=False))
-            print(rows[-1])
-            break
-    total = torch.cuda.get_device_properties(0).total_memory / 2**30
-    return dict(gpu_gib=round(total, 2), tokens_per_sequence=context_steps * STEP_LEN + OUT_LEN - 1, rows=rows)
-
-
-@app.local_entrypoint()
-def probe_memory(
-    model_type: str = "gpt-micro",
-    context_steps: int = 64,
-    batch_sizes: str = "1,4,8,12,16,24,32",
-    autocast: bool = True,
-    obs_mode: str = "compact",
-    gpu: str = DEFAULT_GPU,
-):
-    """Find the largest world_batch_size that fits: modal run modal_train.py::probe_memory"""
-    fn = probe_memory_remote if gpu == DEFAULT_GPU else probe_memory_remote.with_options(gpu=gpu)
-    sizes = [int(s) for s in batch_sizes.split(",")]
-    result = fn.remote(model_type, context_steps, sizes, autocast, obs_mode)
-    print(json.dumps(result, indent=1))

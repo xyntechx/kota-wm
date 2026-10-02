@@ -51,7 +51,9 @@ class WorldModel(nn.Module):
 
         # optional auxiliary head: discounted return from this action (training only)
         self.ret_head = (
-            nn.Sequential(nn.Linear(outcome_dim, hidden), nn.GELU(), nn.Linear(hidden, 1))
+            nn.Sequential(
+                nn.Linear(outcome_dim, hidden), nn.GELU(), nn.Linear(hidden, 1)
+            )
             if return_head
             else None
         )
